@@ -1,0 +1,159 @@
+You are a senior backend engineer.
+
+Your task is to build ONLY THE BACKEND for a SaaS DOCX editor.
+Do NOT generate frontend code.
+Do NOT change the DOCX core behavior.
+
+====================================================
+CORE REQUIREMENT (CRITICAL)
+====================================================
+You MUST integrate the following DOCX core behavior exactly:
+
+- Upload .docx via multer (memory storage)
+- Parse DOCX using JSZip + xmldom
+- Extract paragraphs using <w:p> tags
+- Preserve EMPTY paragraphs (line breaks)
+- Assign stable UUID to each paragraph
+- Maintain paragraph order
+- Allow:
+  - Edit existing paragraphs
+  - Insert new paragraphs
+  - Delete paragraphs
+- Rebuild DOCX by modifying word/document.xml
+- Stream edited DOCX as download
+
+⚠️ DO NOT rewrite the DOCX logic.
+Use it as a service layer.
+
+====================================================
+TECH STACK
+====================================================
+- Node.js + Express
+- JWT authentication
+- bcrypt for passwords
+- Multer for uploads
+- Razorpay for payments
+- MongoDB or PostgreSQL
+- Environment-based config
+
+====================================================
+AUTHENTICATION & ROLES
+====================================================
+Roles:
+- USER
+- ADMIN
+
+Auth:
+- Register
+- Login
+- JWT access token
+- Role-based middleware
+
+====================================================
+PLANS & LIMITS
+====================================================
+Plans:
+- FREE → 3 DOCX edits per month
+- PRO  → 30 DOCX edits per month ($3)
+
+Rules:
+- Enforce limits at upload time
+- Reset usage monthly
+- Block upload when limit exceeded
+
+====================================================
+RAZORPAY PAYMENT FLOW
+====================================================
+- Create Razorpay order
+- Verify payment signature
+- Upgrade user plan to PRO on success
+- Store payment records
+
+====================================================
+DATABASE MODELS
+====================================================
+
+User:
+- id
+- email
+- passwordHash
+- role (USER / ADMIN)
+- plan (FREE / PRO)
+- monthlyUsage
+- createdAt
+
+Document:
+- id
+- userId
+- documentId (UUID used by DOCX core)
+- createdAt
+
+Payment:
+- id
+- userId
+- razorpayOrderId
+- razorpayPaymentId
+- amount
+- status
+- createdAt
+
+====================================================
+API ENDPOINTS
+====================================================
+
+Auth:
+POST   /api/auth/register
+POST   /api/auth/login
+
+User:
+GET    /api/user/me
+
+DOCX:
+POST   /api/upload      (Auth + Plan limit required)
+POST   /api/export      (Auth required)
+
+Payment:
+POST   /api/payment/create-order
+POST   /api/payment/verify
+GET    /api/payment/history
+
+Admin (ADMIN ONLY):
+GET    /api/admin/users
+PUT    /api/admin/user/:id/plan
+GET    /api/admin/payments
+
+====================================================
+SECURITY
+====================================================
+- Validate file type (.docx only)
+- Max upload size 10MB
+- Rate limiting
+- JWT expiration
+- Input sanitization
+- CORS configured safely
+
+====================================================
+ARCHITECTURE
+====================================================
+- Separate routes, controllers, services
+- DOCX logic isolated in docx.service.js
+- Razorpay logic isolated
+- Auth middleware
+- Role middleware
+- Plan limit middleware
+
+====================================================
+DELIVERABLES
+====================================================
+- Complete backend code
+- Modular folder structure
+- Sample .env file
+- Comments explaining DOCX logic integration
+- Production-ready error handling
+
+====================================================
+FINAL RULE
+====================================================
+This is a real SaaS backend.
+Prioritize correctness, security, scalability,
+and full compatibility with the existing DOCX editor frontend.
