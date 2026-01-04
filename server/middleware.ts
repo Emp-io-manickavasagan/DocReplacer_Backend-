@@ -6,7 +6,7 @@ const JWT_SECRET = process.env.JWT_SECRET || "super_secret_jwt_key_123";
 
 export interface AuthRequest extends Request {
   user?: {
-    id: number;
+    id: string;
     email: string;
     role: string;
     plan: string;
@@ -41,12 +41,28 @@ export const checkPlanLimit = async (req: AuthRequest, res: Response, next: Next
   const user = await storage.getUser(req.user.id);
   if (!user) return res.status(404).json({ message: "User not found" });
 
-  // Reset usage if needed (simple check for now, ideally verified on login/daily job)
   const now = new Date();
-  const lastReset = user.lastUsageReset ? new Date(user.lastUsageReset) : new Date(0);
-  if (now.getMonth() !== lastReset.getMonth() || now.getFullYear() !== lastReset.getFullYear()) {
-    await storage.resetMonthlyUsage(user.id);
-    user.monthlyUsage = 0;
+  const planActivatedAt = new Date(user.planActivatedAt || user.createdAt);
+  const daysSincePlanActivation = Math.floor((now.getTime() - planActivatedAt.getTime()) / (1000 * 60 * 60 * 24));
+  
+  // Check if 30 days have passed since plan activation
+  if (daysSincePlanActivation >= 30) {
+    // Reset usage and update plan activation date
+    await storage.resetMonthlyUsage(user._id);
+    
+    // If PRO plan, downgrade to FREE after 30 days (subscription expired)
+    if (user.plan === 'PRO') {
+      await storage.updateUserPlan(user._id, 'FREE');
+      await storage.updatePlanActivationDate(user._id, now);
+    } else {
+      // For FREE users, just reset the cycle
+      await storage.updatePlanActivationDate(user._id, now);
+    }
+    
+    // Refresh user data
+    const updatedUser = await storage.getUser(req.user.id);
+    user.monthlyUsage = updatedUser?.monthlyUsage || 0;
+    user.plan = updatedUser?.plan || 'FREE';
   }
 
   const limits = {
@@ -63,6 +79,6 @@ export const checkPlanLimit = async (req: AuthRequest, res: Response, next: Next
   next();
 };
 
-export const generateToken = (user: { id: number; email: string; role: string; plan: string }) => {
-  return jwt.sign(user, JWT_SECRET, { expiresIn: '1h' });
+export const generateToken = (user: { id: string; email: string; role: string; plan: string }) => {
+  return jwt.sign(user, JWT_SECRET, { expiresIn: '30d' });
 };

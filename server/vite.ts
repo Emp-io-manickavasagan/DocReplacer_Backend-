@@ -1,7 +1,6 @@
 import { type Express } from "express";
 import { createServer as createViteServer, createLogger } from "vite";
 import { type Server } from "http";
-import viteConfig from "../vite.config";
 import fs from "fs";
 import path from "path";
 import { nanoid } from "nanoid";
@@ -15,9 +14,12 @@ export async function setupVite(server: Server, app: Express) {
     allowedHosts: true as const,
   };
 
+  // Point to the Frontend folder instead of client
+  const frontendPath = path.resolve(import.meta.dirname, "..", "..", "Frontend");
+  
   const vite = await createViteServer({
-    ...viteConfig,
-    configFile: false,
+    root: frontendPath,
+    configFile: path.join(frontendPath, "vite.config.ts"),
     customLogger: {
       ...viteLogger,
       error: (msg, options) => {
@@ -34,13 +36,13 @@ export async function setupVite(server: Server, app: Express) {
   app.use("*", async (req, res, next) => {
     const url = req.originalUrl;
 
+    // Skip API routes - let them be handled by the API router
+    if (url.startsWith('/api')) {
+      return next();
+    }
+
     try {
-      const clientTemplate = path.resolve(
-        import.meta.dirname,
-        "..",
-        "client",
-        "index.html",
-      );
+      const clientTemplate = path.join(frontendPath, "index.html");
 
       // always reload the index.html file from disk incase it changes
       let template = await fs.promises.readFile(clientTemplate, "utf-8");

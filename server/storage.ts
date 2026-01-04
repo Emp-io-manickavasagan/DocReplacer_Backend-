@@ -1,86 +1,146 @@
-import { users, documents, payments, type User, type InsertUser, type Document, type Payment } from "@shared/schema";
-import { db } from "./db";
-import { eq, sql } from "drizzle-orm";
+import { User, Document, Payment, type UserType, type DocumentType, type PaymentType } from "./models";
 
 export interface IStorage {
+  // Check and downgrade expired PRO users
+  checkExpiredPlans(): Promise<void>;
+  
+  // Get user's active subscription
+  getUserSubscription(userId: string): Promise<PaymentType | null>;
+  
   // User
-  getUser(id: number): Promise<User | undefined>;
-  getUserByEmail(email: string): Promise<User | undefined>;
-  createUser(user: InsertUser & { role?: string }): Promise<User>;
-  updateUserPlan(userId: number, plan: string): Promise<void>;
-  incrementMonthlyUsage(userId: number): Promise<void>;
-  resetMonthlyUsage(userId: number): Promise<void>;
+  getUser(id: string): Promise<UserType | null>;
+  getUserByEmail(email: string): Promise<UserType | null>;
+  createUser(user: { email: string; password: string; role?: string; isVerified?: boolean }): Promise<UserType>;
+  updateUserPlan(userId: string, plan: string): Promise<void>;
+  updatePlanActivationDate(userId: string, date: Date): Promise<void>;
+  updateUserRole(userId: string, role: string): Promise<void>;
+  deleteUser(userId: string): Promise<void>;
+  updateUserPassword(email: string, hashedPassword: string): Promise<void>;
+  incrementMonthlyUsage(userId: string): Promise<void>;
+  resetMonthlyUsage(userId: string): Promise<void>;
   
   // Document
-  createDocument(doc: { userId: number; name: string; documentId: string; originalContent: string }): Promise<Document>;
-  getDocument(documentId: string): Promise<Document | undefined>;
+  createDocument(doc: { userId: string; name: string; documentId: string; originalContent: string }): Promise<DocumentType>;
+  getDocument(documentId: string): Promise<DocumentType | null>;
   
   // Payment
-  createPayment(payment: { userId: number; razorpayOrderId: string; amount: number; status: string }): Promise<Payment>;
-  updatePaymentStatus(razorpayOrderId: string, status: string, paymentId?: string): Promise<void>;
-  getPayments(): Promise<Payment[]>;
-  getUsers(): Promise<User[]>;
+  createPayment(payment: { userId: string; dodoPurchaseId: string; productId: string; amount: number; status: string; customerEmail?: string }): Promise<PaymentType>;
+  updatePaymentStatus(dodoPurchaseId: string, status: string, subscriptionData?: { startDate: Date; endDate: Date }): Promise<void>;
+  getPaymentByPurchaseId(dodoPurchaseId: string): Promise<PaymentType | null>;
+  getPayments(): Promise<PaymentType[]>;
+  getUsers(): Promise<UserType[]>;
 }
 
 export class DatabaseStorage implements IStorage {
-  async getUser(id: number): Promise<User | undefined> {
-    const [user] = await db.select().from(users).where(eq(users.id, id));
-    return user;
+  async checkExpiredPlans(): Promise<void> {
+    const now = new Date();
+    await User.updateMany(
+      { 
+        plan: 'PRO', 
+        planExpiresAt: { $lt: now } 
+      },
+      { 
+        plan: 'FREE',
+        planExpiresAt: null,
+        monthlyUsage: 0
+      }
+    );
   }
 
-  async getUserByEmail(email: string): Promise<User | undefined> {
-    const [user] = await db.select().from(users).where(eq(users.email, email));
-    return user;
+  async getUserSubscription(userId: string): Promise<PaymentType | null> {
+    return await Payment.findOne({ 
+      userId, 
+      status: 'completed',
+      subscriptionEndDate: { $gte: new Date() }
+    }).sort({ createdAt: -1 });
   }
 
-  async createUser(insertUser: InsertUser & { role?: string }): Promise<User> {
-    const [user] = await db.insert(users).values(insertUser).returning();
-    return user;
+  async getUser(id: string): Promise<UserType | null> {
+    return await User.findById(id);
   }
 
-  async updateUserPlan(userId: number, plan: string): Promise<void> {
-    await db.update(users).set({ plan }).where(eq(users.id, userId));
+  async getUserByEmail(email: string): Promise<UserType | null> {
+    return await User.findOne({ email });
   }
 
-  async incrementMonthlyUsage(userId: number): Promise<void> {
-    await db.update(users)
-      .set({ monthlyUsage: sql`${users.monthlyUsage} + 1` })
-      .where(eq(users.id, userId));
+  async createUser(insertUser: { email: string; password: string; role?: string; isVerified?: boolean }): Promise<UserType> {
+    const user = new User(insertUser);
+    return await user.save();
   }
 
-  async resetMonthlyUsage(userId: number): Promise<void> {
-    await db.update(users)
-      .set({ monthlyUsage: 0, lastUsageReset: new Date() })
-      .where(eq(users.id, userId));
+  async updateUserPlan(userId: string, plan: string): Promise<void> {
+    const now = new Date();
+    const expiresAt = plan === 'PRO' ? new Date(now.getTime() + 24 * 60 * 60 * 1000) : null; // 1 day
+    
+    await User.findByIdAndUpdate(userId, { 
+      plan,
+      planActivatedAt: now,
+      planExpiresAt: expiresAt
+    });
   }
 
-  async createDocument(doc: { userId: number; name: string; documentId: string; originalContent: string }): Promise<Document> {
-    const [document] = await db.insert(documents).values(doc).returning();
-    return document;
+  async updatePlanActivationDate(userId: string, date: Date): Promise<void> {
+    await User.findByIdAndUpdate(userId, { planActivatedAt: date });
   }
 
-  async getDocument(documentId: string): Promise<Document | undefined> {
-    const [document] = await db.select().from(documents).where(eq(documents.documentId, documentId));
-    return document;
+  async updateUserRole(userId: string, role: string): Promise<void> {
+    await User.findByIdAndUpdate(userId, { role });
   }
 
-  async createPayment(payment: { userId: number; razorpayOrderId: string; amount: number; status: string }): Promise<Payment> {
-    const [p] = await db.insert(payments).values(payment).returning();
-    return p;
+  async deleteUser(userId: string): Promise<void> {
+    await User.findByIdAndDelete(userId);
+    await Document.deleteMany({ userId });
+    await Payment.deleteMany({ userId });
   }
 
-  async updatePaymentStatus(razorpayOrderId: string, status: string, paymentId?: string): Promise<void> {
+  async incrementMonthlyUsage(userId: string): Promise<void> {
+    await User.findByIdAndUpdate(userId, { $inc: { monthlyUsage: 1 } });
+  }
+
+  async resetMonthlyUsage(userId: string): Promise<void> {
+    await User.findByIdAndUpdate(userId, { 
+      monthlyUsage: 0, 
+      lastUsageReset: new Date() 
+    });
+  }
+
+  async updateUserPassword(email: string, hashedPassword: string): Promise<void> {
+    await User.findOneAndUpdate({ email }, { password: hashedPassword });
+  }
+
+  async createDocument(doc: { userId: string; name: string; documentId: string; originalContent: string }): Promise<DocumentType> {
+    const document = new Document(doc);
+    return await document.save();
+  }
+
+  async getDocument(documentId: string): Promise<DocumentType | null> {
+    return await Document.findOne({ documentId });
+  }
+
+  async createPayment(payment: { userId: string; dodoPurchaseId: string; productId: string; amount: number; status: string; customerEmail?: string }): Promise<PaymentType> {
+    const p = new Payment(payment);
+    return await p.save();
+  }
+
+  async updatePaymentStatus(dodoPurchaseId: string, status: string, subscriptionData?: { startDate: Date; endDate: Date }): Promise<void> {
     const updates: any = { status };
-    if (paymentId) updates.razorpayPaymentId = paymentId;
-    await db.update(payments).set(updates).where(eq(payments.razorpayOrderId, razorpayOrderId));
+    if (subscriptionData) {
+      updates.subscriptionStartDate = subscriptionData.startDate;
+      updates.subscriptionEndDate = subscriptionData.endDate;
+    }
+    await Payment.findOneAndUpdate({ dodoPurchaseId }, updates);
+  }
+
+  async getPaymentByPurchaseId(dodoPurchaseId: string): Promise<PaymentType | null> {
+    return await Payment.findOne({ dodoPurchaseId });
   }
   
-  async getPayments(): Promise<Payment[]> {
-    return await db.select().from(payments);
+  async getPayments(): Promise<PaymentType[]> {
+    return await Payment.find();
   }
 
-  async getUsers(): Promise<User[]> {
-    return await db.select().from(users);
+  async getUsers(): Promise<UserType[]> {
+    return await User.find();
   }
 }
 

@@ -2,76 +2,121 @@ import JSZip from 'jszip';
 import { DOMParser, XMLSerializer } from '@xmldom/xmldom';
 import { randomUUID } from 'crypto';
 
-// In-memory store for file buffers (for this session/MVP)
-// In a real production app, this should be S3 or similar, 
-// but requirements said "Upload .docx via multer (memory storage)"
 export const fileBufferStore = new Map<string, Buffer>();
+export const paragraphMappings = new Map<string, { [key: string]: number }>();
+
+// XML helpers
+const parseXml = (xml: string) => new DOMParser().parseFromString(xml, "application/xml");
+const serializeXml = (doc: Document) => new XMLSerializer().serializeToString(doc);
+
+// Get all paragraphs with their text runs
+const getParagraphs = (doc: Document) => {
+  const paragraphs = Array.from(doc.getElementsByTagName("w:p"));
+  return paragraphs.map((p) => {
+    const runs = Array.from(p.getElementsByTagName("w:r"));
+    const textNodes = runs.map((r) => {
+      const tNodes = Array.from(r.getElementsByTagName("w:t"));
+      return tNodes.map((t) => t.textContent || "").join("");
+    });
+    return {
+      element: p,
+      text: textNodes.join(""),
+    };
+  });
+};
 
 export class DocxService {
+  // Unzip and parse
   async parse(buffer: Buffer) {
     const zip = await JSZip.loadAsync(buffer);
-    const docXml = await zip.file("word/document.xml")?.async("string");
-    
-    if (!docXml) {
-      throw new Error("Invalid DOCX: missing word/document.xml");
+    const documentEntry = zip.file("word/document.xml");
+    if (!documentEntry) {
+      throw new Error("document.xml missing");
     }
 
-    const doc = new DOMParser().parseFromString(docXml, "text/xml");
-    const paragraphs: { id: string; text: string }[] = [];
-    const ps = doc.getElementsByTagName("w:p");
+    const xml = await documentEntry.async("string");
+    const xmlDoc = parseXml(xml);
+    const paragraphs = getParagraphs(xmlDoc);
 
-    for (let i = 0; i < ps.length; i++) {
-      const p = ps[i];
+    const paragraphMap: { [key: string]: number } = {};
+    const nodes = paragraphs.map((para, index) => {
       const id = randomUUID();
-      // Simple text extraction. 
-      // Note: This strips formatting. A full editor needs more complex XML handling.
-      const textContent = p.textContent || "";
-      paragraphs.push({ id, text: textContent });
-    }
-    
-    return paragraphs;
+      paragraphMap[id] = index;
+      return { 
+        id, 
+        text: para.text,
+        isEmpty: para.text.trim() === ""
+      };
+    });
+
+    return { nodes, paragraphMap };
   }
 
-  async rebuild(originalBuffer: Buffer, newParagraphs: { id: string; text: string }[]) {
+  // Unzip, replace nodes, zip
+  async rebuild(originalBuffer: Buffer, edits: { id: string; text: string }[], paragraphMap: { [key: string]: number }) {
     const zip = await JSZip.loadAsync(originalBuffer);
-    const docXml = await zip.file("word/document.xml")?.async("string");
+    const documentEntry = zip.file("word/document.xml");
+    const xml = await documentEntry!.async("string");
+    const xmlDoc = parseXml(xml);
+
+    const paragraphs = getParagraphs(xmlDoc);
+    const body = xmlDoc.getElementsByTagName("w:body")[0];
+
+    const paragraphsToKeep = new Set<number>();
     
-    if (!docXml) {
-      throw new Error("Invalid DOCX: missing word/document.xml");
+    edits.forEach((edit) => {
+      if (edit.id && paragraphMap[edit.id] !== undefined) {
+        const index = paragraphMap[edit.id];
+        paragraphsToKeep.add(index);
+        
+        const paraElement = paragraphs[index].element;
+        const runs = Array.from(paraElement.getElementsByTagName("w:r"));
+        
+        if (runs.length > 0) {
+          for (let i = runs.length - 1; i > 0; i--) {
+            runs[i].parentNode!.removeChild(runs[i]);
+          }
+          
+          const firstRun = runs[0];
+          const tNodes = Array.from(firstRun.getElementsByTagName("w:t"));
+          tNodes.forEach((t) => {
+            t.parentNode!.removeChild(t);
+          });
+          
+          const newText = xmlDoc.createElement("w:t");
+          newText.setAttribute("xml:space", "preserve");
+          newText.textContent = edit.text || "";
+          firstRun.appendChild(newText);
+        } else {
+          const newRun = xmlDoc.createElement("w:r");
+          const newText = xmlDoc.createElement("w:t");
+          newText.setAttribute("xml:space", "preserve");
+          newText.textContent = edit.text || "";
+          newRun.appendChild(newText);
+          paraElement.appendChild(newRun);
+        }
+      }
+      else if (edit.id === null) {
+        const p = xmlDoc.createElement("w:p");
+        const r = xmlDoc.createElement("w:r");
+        const t = xmlDoc.createElement("w:t");
+        t.setAttribute("xml:space", "preserve");
+        t.textContent = edit.text || "";
+        r.appendChild(t);
+        p.appendChild(r);
+        body.appendChild(p);
+      }
+    });
+
+    for (let i = paragraphs.length - 1; i >= 0; i--) {
+      if (!paragraphsToKeep.has(i)) {
+        const paraElement = paragraphs[i].element;
+        paraElement.parentNode!.removeChild(paraElement);
+      }
     }
 
-    const doc = new DOMParser().parseFromString(docXml, "text/xml");
-    const body = doc.getElementsByTagName("w:body")[0];
-    const sectPr = body.getElementsByTagName("w:sectPr")[0];
-
-    // Remove existing paragraphs
-    // Note: This is a destructive edit that simplifies the structure.
-    // It assumes we replace the entire body content with the new list.
-    const existingPs = Array.from(doc.getElementsByTagName("w:p"));
-    existingPs.forEach(p => {
-        if (p.parentNode === body) {
-            body.removeChild(p);
-        }
-    });
-    
-    // Insert new paragraphs
-    newParagraphs.forEach(para => {
-        const newP = doc.createElement("w:p");
-        const newR = doc.createElement("w:r");
-        const newT = doc.createElement("w:t");
-        newT.textContent = para.text || "";
-        newR.appendChild(newT);
-        newP.appendChild(newR);
-        
-        if (sectPr) {
-            body.insertBefore(newP, sectPr);
-        } else {
-            body.appendChild(newP);
-        }
-    });
-    
-    const newXml = new XMLSerializer().serializeToString(doc);
-    zip.file("word/document.xml", newXml);
+    const updatedXml = serializeXml(xmlDoc);
+    zip.file("word/document.xml", updatedXml);
     return zip.generateAsync({ type: "nodebuffer" });
   }
 }

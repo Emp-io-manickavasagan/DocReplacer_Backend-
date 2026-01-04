@@ -1,67 +1,63 @@
-import { pgTable, text, serial, integer, timestamp } from "drizzle-orm/pg-core";
-import { createInsertSchema } from "drizzle-zod";
 import { z } from "zod";
 
-export const users = pgTable("users", {
-  id: serial("id").primaryKey(),
-  email: text("email").notNull().unique(),
-  password: text("password").notNull(),
-  role: text("role").notNull().default("USER"), // USER, ADMIN
-  plan: text("plan").notNull().default("FREE"), // FREE, PRO
-  monthlyUsage: integer("monthly_usage").notNull().default(0),
-  lastUsageReset: timestamp("last_usage_reset").defaultNow(),
-  createdAt: timestamp("created_at").defaultNow(),
+// Zod schemas for validation
+export const insertUserSchema = z.object({
+  email: z.string().email(),
+  password: z.string().min(6),
+  name: z.string().optional(),
 });
 
-// We store document state to allow editing before export
-export const documents = pgTable("documents", {
-  id: serial("id").primaryKey(),
-  userId: integer("user_id").references(() => users.id).notNull(),
-  name: text("name").notNull(),
-  // Internal DOCX ID to link back to the file if needed, 
-  // though for memory storage we might just rely on the session/upload
-  // For this architecture, we'll assume we parse and return structure, 
-  // and export takes the structure back to rebuild.
-  // But if we need to "edit existing paragraphs", we need the original file or structure.
-  // We'll store the original file structure (paragraphs) as JSON.
-  originalContent: text("original_content"), // JSON string of original paragraphs
-  createdAt: timestamp("created_at").defaultNow(),
+export const insertDocumentSchema = z.object({
+  userId: z.string(),
+  name: z.string(),
+  documentId: z.string(),
+  originalContent: z.string().optional(),
 });
 
-export const payments = pgTable("payments", {
-  id: serial("id").primaryKey(),
-  userId: integer("user_id").references(() => users.id).notNull(),
-  razorpayOrderId: text("razorpay_order_id").notNull(),
-  razorpayPaymentId: text("razorpay_payment_id"),
-  amount: integer("amount").notNull(),
-  status: text("status").notNull(), // created, paid, failed
-  createdAt: timestamp("created_at").defaultNow(),
+export const insertPaymentSchema = z.object({
+  userId: z.string(),
+  razorpayOrderId: z.string(),
+  razorpayPaymentId: z.string().optional(),
+  amount: z.number(),
+  status: z.string(),
 });
 
-export const insertUserSchema = createInsertSchema(users).pick({
-  email: true,
-  password: true,
-});
+// Types
+export type User = {
+  _id: string;
+  email: string;
+  password: string;
+  role: string;
+  plan: string;
+  monthlyUsage: number;
+  lastUsageReset: Date;
+  createdAt: Date;
+};
 
-export const insertDocumentSchema = createInsertSchema(documents).omit({
-  id: true,
-  createdAt: true
-});
-
-export const insertPaymentSchema = createInsertSchema(payments).omit({
-  id: true,
-  createdAt: true
-});
-
-export type User = typeof users.$inferSelect;
 export type InsertUser = z.infer<typeof insertUserSchema>;
-export type Document = typeof documents.$inferSelect;
-export type Payment = typeof payments.$inferSelect;
+
+export type Document = {
+  _id: string;
+  userId: string;
+  name: string;
+  documentId: string;
+  originalContent?: string;
+  createdAt: Date;
+};
+
+export type Payment = {
+  _id: string;
+  userId: string;
+  razorpayOrderId: string;
+  razorpayPaymentId?: string;
+  amount: number;
+  status: string;
+  createdAt: Date;
+};
 
 // Paragraph structure for the editor
 export interface DocxParagraph {
   id: string;
   text: string;
   style?: string;
-  // We can add more properties as needed for faithful reconstruction
 }

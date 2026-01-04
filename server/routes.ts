@@ -5,19 +5,15 @@ import { api } from "@shared/routes";
 import { z } from "zod";
 import bcrypt from "bcryptjs";
 import multer from "multer";
-import Razorpay from "razorpay";
 import crypto from "crypto";
-import { docxService, fileBufferStore } from "./docx.service";
+import { docxService, fileBufferStore, paragraphMappings } from "./docx.service";
 import { authenticateToken, authorizeRole, checkPlanLimit, generateToken, type AuthRequest } from "./middleware";
+import { sendOTP, generateOTP } from "./email.service";
+import { OTP, Payment } from "./models";
 
 const upload = multer({ 
   storage: multer.memoryStorage(),
   limits: { fileSize: 10 * 1024 * 1024 } // 10MB
-});
-
-const razorpay = new Razorpay({
-  key_id: process.env.RAZORPAY_KEY_ID || 'rzp_test_123',
-  key_secret: process.env.RAZORPAY_KEY_SECRET || 'rzp_secret_123',
 });
 
 export async function registerRoutes(
@@ -25,8 +21,164 @@ export async function registerRoutes(
   app: Express
 ): Promise<Server> {
 
+  // Check expired plans every hour
+  setInterval(async () => {
+    try {
+      await storage.checkExpiredPlans();
+      console.log('✅ Checked for expired plans:', new Date().toISOString());
+    } catch (error) {
+      console.error('❌ Error checking expired plans:', error);
+    }
+  }, 60 * 60 * 1000); // 1 hour
+
+  // Initial check on startup
+  setTimeout(async () => {
+    try {
+      await storage.checkExpiredPlans();
+      console.log('✅ Initial expired plans check completed');
+    } catch (error) {
+      console.error('❌ Initial expired plans check failed:', error);
+    }
+  }, 5000); // 5 seconds after startup
+
+  // Test route
+  app.get('/api/test', (req, res) => {
+    console.log('Test route hit!');
+    res.json({ message: 'API is working!' });
+  });
+
+  // Test email route
+  app.post('/api/test-email', async (req, res) => {
+    try {
+      const { email } = req.body;
+      const testOTP = '123456';
+      await sendOTP(email, testOTP);
+      res.json({ message: 'Test email sent successfully' });
+    } catch (error) {
+      console.error('Test email failed:', error);
+      res.status(500).json({ message: 'Test email failed', error: error.message });
+    }
+  });
+
+  // Debug route to list all routes
+  app.get('/api/debug/routes', (req, res) => {
+    const routes = [];
+    app._router.stack.forEach((middleware) => {
+      if (middleware.route) {
+        routes.push({
+          path: middleware.route.path,
+          methods: Object.keys(middleware.route.methods)
+        });
+      }
+    });
+    res.json({ routes });
+  });
+
   // === AUTH ===
+  app.post('/api/auth/send-otp', async (req, res) => {
+    try {
+      const { email, password, name } = req.body;
+      const existing = await storage.getUserByEmail(email);
+      if (existing) {
+        return res.status(400).json({ message: "Email already exists" });
+      }
+
+      const otp = generateOTP();
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+      
+      await OTP.deleteMany({ email }); // Remove old OTPs
+      await OTP.create({ email, otp, expiresAt, userData: { email, password, name } });
+      
+      await sendOTP(email, otp);
+      res.json({ message: "OTP sent to email" });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ message: "Failed to send OTP" });
+    }
+  });
+
+  app.post('/api/auth/verify-otp', async (req, res) => {
+    try {
+      const { email, otp } = req.body;
+      const otpRecord = await OTP.findOne({ email, otp });
+      
+      if (!otpRecord || otpRecord.expiresAt < new Date()) {
+        return res.status(400).json({ message: "Invalid or expired OTP" });
+      }
+
+      const { userData } = otpRecord;
+      const hashedPassword = await bcrypt.hash(userData.password, 10);
+      const user = await storage.createUser({ ...userData, password: hashedPassword, isVerified: true });
+      
+      await OTP.deleteOne({ _id: otpRecord._id });
+      
+      const token = generateToken({ id: user._id, email: user.email, role: user.role, plan: user.plan });
+      res.status(201).json({ token, user: { id: user._id, email: user.email, role: user.role, plan: user.plan } });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ message: "Verification failed" });
+    }
+  });
+
+  app.post('/api/auth/forgot-password', async (req, res) => {
+    try {
+      console.log('Forgot password request:', req.body);
+      const { email } = req.body;
+      
+      if (!email) {
+        return res.status(400).json({ message: "Email is required" });
+      }
+      
+      const user = await storage.getUserByEmail(email);
+      if (!user) {
+        return res.status(404).json({ message: "Email not found" });
+      }
+
+      const otp = generateOTP();
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+      
+      console.log('Generated OTP:', otp, 'for email:', email);
+      
+      await OTP.deleteMany({ email });
+      await OTP.create({ email, otp, expiresAt, userData: { type: 'password_reset' } });
+      
+      // Send response immediately, then send email in background
+      res.json({ message: "Password reset OTP sent to email" });
+      
+      // Send email in background
+      console.log('Sending OTP email in background...');
+      sendOTP(email, otp).catch(error => {
+        console.error('Background email sending failed:', error);
+      });
+      
+    } catch (err) {
+      console.error('Forgot password error:', err);
+      res.status(500).json({ message: "Failed to send reset OTP", error: err.message });
+    }
+  });
+
+  app.post('/api/auth/reset-password', async (req, res) => {
+    try {
+      const { email, otp, newPassword } = req.body;
+      const otpRecord = await OTP.findOne({ email, otp });
+      
+      if (!otpRecord || otpRecord.expiresAt < new Date()) {
+        return res.status(400).json({ message: "Invalid or expired OTP" });
+      }
+
+      const hashedPassword = await bcrypt.hash(newPassword, 10);
+      await storage.updateUserPassword(email, hashedPassword);
+      
+      await OTP.deleteOne({ _id: otpRecord._id });
+      
+      res.json({ message: "Password reset successfully" });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ message: "Password reset failed" });
+    }
+  });
   app.post(api.auth.register.path, async (req, res) => {
+    console.log('Register route hit with body:', req.body);
     try {
       const input = api.auth.register.input.parse(req.body);
       const existing = await storage.getUserByEmail(input.email);
@@ -36,9 +188,9 @@ export async function registerRoutes(
 
       const hashedPassword = await bcrypt.hash(input.password, 10);
       const user = await storage.createUser({ ...input, password: hashedPassword });
-      const token = generateToken({ id: user.id, email: user.email, role: user.role, plan: user.plan });
+      const token = generateToken({ id: user._id, email: user.email, role: user.role, plan: user.plan });
       
-      res.status(201).json({ token, user: { id: user.id, email: user.email, role: user.role, plan: user.plan } });
+      res.status(201).json({ token, user: { id: user._id, email: user.email, role: user.role, plan: user.plan } });
     } catch (err) {
        if (err instanceof z.ZodError) {
           return res.status(400).json({ message: err.errors[0].message });
@@ -56,17 +208,37 @@ export async function registerRoutes(
         return res.status(401).json({ message: "Invalid credentials" });
       }
 
-      const token = generateToken({ id: user.id, email: user.email, role: user.role, plan: user.plan });
-      res.status(200).json({ token, user: { id: user.id, email: user.email, role: user.role, plan: user.plan } });
+      const token = generateToken({ id: user._id, email: user.email, role: user.role, plan: user.plan });
+      res.status(200).json({ token, user: { id: user._id, email: user.email, role: user.role, plan: user.plan } });
     } catch (err) {
       res.status(500).json({ message: "Internal server error" });
     }
   });
 
-  app.get(api.auth.me.path, authenticateToken, async (req: AuthRequest, res) => {
+  app.get('/api/user/me', authenticateToken, async (req: AuthRequest, res) => {
+    // Check for expired plans before returning user data
+    await storage.checkExpiredPlans();
+    
     const user = await storage.getUser(req.user!.id);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
-    res.json({ id: user.id, email: user.email, role: user.role, plan: user.plan, monthlyUsage: user.monthlyUsage });
+    
+    // Get subscription details
+    const subscription = await storage.getUserSubscription(req.user!.id);
+    
+    res.json({ 
+      id: user._id, 
+      email: user.email, 
+      role: user.role, 
+      plan: user.plan, 
+      monthlyUsage: user.monthlyUsage || 0,
+      planExpiresAt: user.planExpiresAt,
+      subscription: subscription ? {
+        purchaseId: subscription.dodoPurchaseId,
+        startDate: subscription.subscriptionStartDate,
+        endDate: subscription.subscriptionEndDate,
+        amount: subscription.amount
+      } : null
+    });
   });
 
   // === DOCX ===
@@ -77,24 +249,26 @@ export async function registerRoutes(
     }
 
     try {
-      const paragraphs = await docxService.parse(req.file.buffer);
+      const result = await docxService.parse(req.file.buffer);
       const documentId = crypto.randomUUID();
       
-      // Store file buffer for later export/rebuild
+      console.log('DOCX parsed successfully:');
+      console.log('Number of paragraphs:', result.nodes.length);
+      console.log('First 5 paragraphs:', result.nodes.slice(0, 5));
+      
+      // Store file buffer and paragraph mapping for later export
       fileBufferStore.set(documentId, req.file.buffer);
+      paragraphMappings.set(documentId, result.paragraphMap);
 
       // Save metadata
       await storage.createDocument({
         userId: req.user!.id,
         name: req.file.originalname,
         documentId,
-        originalContent: JSON.stringify(paragraphs)
+        originalContent: JSON.stringify(result.nodes)
       });
-      
-      // Increment usage
-      await storage.incrementMonthlyUsage(req.user!.id);
 
-      res.json({ documentId, paragraphs });
+      res.json({ documentId, paragraphs: result.nodes });
     } catch (err) {
       console.error(err);
       res.status(500).json({ message: "Failed to parse DOCX" });
@@ -102,69 +276,114 @@ export async function registerRoutes(
   });
 
   app.post(api.docx.export.path, authenticateToken, async (req: AuthRequest, res) => {
+    console.log('Export route hit');
     try {
       const { documentId, paragraphs } = req.body;
-      const originalBuffer = fileBufferStore.get(documentId);
+      console.log('Export request:', { documentId, paragraphs: paragraphs?.length });
       
-      if (!originalBuffer) {
+      const originalBuffer = fileBufferStore.get(documentId);
+      const paragraphMap = paragraphMappings.get(documentId);
+      console.log('Original buffer found:', !!originalBuffer);
+      console.log('Paragraph map found:', !!paragraphMap);
+      
+      if (!originalBuffer || !paragraphMap) {
+        console.log('Missing data for documentId:', documentId);
         return res.status(404).json({ message: "Original document not found (session expired?)" });
       }
       
-      // Rebuild DOCX
-      const newBuffer = await docxService.rebuild(originalBuffer, paragraphs);
+      console.log('Starting DOCX rebuild...');
+      // Rebuild DOCX with proper paragraph mapping
+      const newBuffer = await docxService.rebuild(originalBuffer, paragraphs, paragraphMap);
+      console.log('DOCX rebuild successful, buffer size:', newBuffer.length);
+      
+      // Increment usage count on successful export
+      await storage.incrementMonthlyUsage(req.user!.id);
       
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
       res.setHeader('Content-Disposition', `attachment; filename="edited_${documentId}.docx"`);
       res.send(newBuffer);
     } catch (err) {
-      console.error(err);
+      console.error('Export error:', err);
       res.status(500).json({ message: "Failed to export DOCX" });
     }
   });
 
   // === PAYMENT ===
-  app.post(api.payment.createOrder.path, authenticateToken, async (req: AuthRequest, res) => {
-    const { amount } = req.body; // Expecting amount in paise (e.g. 300 = $3.00 if currency was USD, but Razorpay uses INR/etc. Let's assume standard unit)
-    
+  app.post('/api/payment/dodo-webhook', async (req, res) => {
     try {
-      const options = {
-        amount: amount * 100, // Convert to smallest currency unit if input is whole number
-        currency: "USD", // Or INR
-        receipt: `receipt_${req.user!.id}_${Date.now()}`
-      };
+      // Validate webhook signature here in production
+      const { event_type, data } = req.body;
       
-      const order = await razorpay.orders.create(options);
+      console.log('Dodo webhook received:', { event_type, data });
       
-      await storage.createPayment({
-        userId: req.user!.id,
-        razorpayOrderId: order.id,
-        amount: options.amount,
-        status: "created"
-      });
-
-      res.json({ orderId: order.id, amount: options.amount, currency: options.currency });
-    } catch (err) {
-      console.error(err);
-      res.status(500).json({ message: "Payment creation failed" });
+      if (event_type === 'purchase.completed') {
+        const { purchase_id, product_id, customer_email, amount } = data;
+        
+        // Validate required fields
+        if (!purchase_id || !customer_email || !amount) {
+          return res.status(400).json({ error: 'Missing required webhook data' });
+        }
+        
+        // Find user by email
+        const user = await storage.getUserByEmail(customer_email);
+        if (!user) {
+          console.error('User not found for email:', customer_email);
+          return res.status(404).json({ error: 'User not found' });
+        }
+        
+        // Create payment record
+        const startDate = new Date();
+        const endDate = new Date(startDate.getTime() + 24 * 60 * 60 * 1000); // 1 day for testing
+        
+        await storage.createPayment({
+          userId: user._id,
+          dodoPurchaseId: purchase_id,
+          productId: product_id,
+          amount: amount,
+          status: 'completed',
+          customerEmail: customer_email
+        });
+        
+        // Update payment with subscription dates
+        await storage.updatePaymentStatus(purchase_id, 'completed', {
+          startDate,
+          endDate
+        });
+        
+        // Upgrade user to PRO
+        await storage.updateUserPlan(user._id, 'PRO');
+        
+        console.log('Payment processed successfully for user:', user.email);
+      }
+      
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Dodo webhook error:', error);
+      res.status(500).json({ error: 'Webhook processing failed' });
     }
   });
 
-  app.post(api.payment.verify.path, authenticateToken, async (req: AuthRequest, res) => {
-    const { razorpay_order_id, razorpay_payment_id, razorpay_signature } = req.body;
-    
-    const body = razorpay_order_id + "|" + razorpay_payment_id;
-    const expectedSignature = crypto
-      .createHmac('sha256', process.env.RAZORPAY_KEY_SECRET || 'rzp_secret_123')
-      .update(body.toString())
-      .digest('hex');
-
-    if (expectedSignature === razorpay_signature) {
-      await storage.updatePaymentStatus(razorpay_order_id, "paid", razorpay_payment_id);
-      await storage.updateUserPlan(req.user!.id, "PRO");
-      res.json({ success: true });
-    } else {
-      await storage.updatePaymentStatus(razorpay_order_id, "failed");
-      res.status(400).json({ success: false, message: "Invalid signature" });
+  // Manual payment verification endpoint
+  app.post('/api/payment/verify-manual', authenticateToken, async (req: AuthRequest, res) => {
+    try {
+      const { purchase_id } = req.body;
+      
+      // Check if payment exists and is completed
+      const payment = await storage.getPaymentByPurchaseId(purchase_id);
+      if (!payment || payment.status !== 'completed') {
+        return res.status(400).json({ error: 'Payment not found or not completed' });
+      }
+      
+      // Upgrade user to PRO if not already
+      if (payment.userId === req.user!.id) {
+        await storage.updateUserPlan(req.user!.id, 'PRO');
+        res.json({ success: true, message: 'Plan upgraded successfully' });
+      } else {
+        res.status(403).json({ error: 'Payment does not belong to this user' });
+      }
+    } catch (error) {
+      console.error('Manual verification error:', error);
+      res.status(500).json({ error: 'Verification failed' });
     }
   });
   
@@ -172,6 +391,16 @@ export async function registerRoutes(
     // In a real app we'd filter by user
     const payments = await storage.getPayments();
     res.json(payments);
+  });
+
+  // Get user payment history
+  app.get('/api/user/payments', authenticateToken, async (req: AuthRequest, res) => {
+    try {
+      const payments = await Payment.find({ userId: req.user!.id }).sort({ createdAt: -1 });
+      res.json(payments);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch payments' });
+    }
   });
 
   // === ADMIN ===
@@ -182,9 +411,60 @@ export async function registerRoutes(
 
   app.put(api.admin.updatePlan.path, authenticateToken, authorizeRole(['ADMIN']), async (req, res) => {
     const { plan } = req.body;
-    const userId = parseInt(req.params.id);
+    const userId = req.params.id;
     await storage.updateUserPlan(userId, plan);
     res.json({ success: true });
+  });
+
+  app.put('/api/admin/user/:id/role', authenticateToken, authorizeRole(['ADMIN']), async (req, res) => {
+    const { role } = req.body;
+    const userId = req.params.id;
+    await storage.updateUserRole(userId, role);
+    res.json({ success: true });
+  });
+
+  app.put('/api/admin/user/:id/reset-usage', authenticateToken, authorizeRole(['ADMIN']), async (req, res) => {
+    const userId = req.params.id;
+    await storage.resetMonthlyUsage(userId);
+    res.json({ success: true });
+  });
+
+  app.delete('/api/admin/user/:id', authenticateToken, authorizeRole(['ADMIN']), async (req, res) => {
+    const userId = req.params.id;
+    await storage.deleteUser(userId);
+    res.json({ success: true });
+  });
+
+  app.post('/api/user/delete-account', authenticateToken, async (req: AuthRequest, res) => {
+    const { password, otp } = req.body;
+    const user = await storage.getUser(req.user!.id);
+    
+    if (!user || !(await bcrypt.compare(password, user.password))) {
+      return res.status(400).json({ message: "Invalid password" });
+    }
+
+    const otpRecord = await OTP.findOne({ email: user.email, otp });
+    if (!otpRecord || otpRecord.expiresAt < new Date()) {
+      return res.status(400).json({ message: "Invalid or expired OTP" });
+    }
+
+    await storage.deleteUser(req.user!.id);
+    await OTP.deleteOne({ _id: otpRecord._id });
+    res.json({ success: true });
+  });
+
+  app.post('/api/user/delete-account-otp', authenticateToken, async (req: AuthRequest, res) => {
+    const user = await storage.getUser(req.user!.id);
+    if (!user) return res.status(404).json({ message: "User not found" });
+
+    const otp = generateOTP();
+    const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+    
+    await OTP.deleteMany({ email: user.email });
+    await OTP.create({ email: user.email, otp, expiresAt, userData: { type: 'account_deletion' } });
+    
+    await sendOTP(user.email, otp);
+    res.json({ message: "OTP sent to email" });
   });
 
   return httpServer;
