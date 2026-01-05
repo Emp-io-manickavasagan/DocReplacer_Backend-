@@ -481,6 +481,9 @@ export async function registerRoutes(
   // === PAYMENT ===
   app.post('/api/payment/dodo-webhook', async (req, res) => {
     try {
+      console.log('🔔 WEBHOOK RECEIVED - Raw body:', JSON.stringify(req.body, null, 2));
+      console.log('🔔 WEBHOOK HEADERS:', JSON.stringify(req.headers, null, 2));
+      
       const { event_type, data } = req.body;
       
       console.log('🔔 Dodo webhook received:', { event_type, data });
@@ -534,6 +537,8 @@ export async function registerRoutes(
         
         console.log('✅ User plan upgraded to PRO for:', user.email);
         console.log('🎉 Payment processing completed successfully');
+      } else {
+        console.log('ℹ️ Webhook event type not handled:', event_type);
       }
       
       res.json({ success: true });
@@ -573,12 +578,29 @@ export async function registerRoutes(
     res.json(payments);
   });
 
+  // Debug endpoint to check all payments
+  app.get('/api/debug/payments', async (req, res) => {
+    try {
+      const allPayments = await Payment.find().sort({ createdAt: -1 });
+      console.log('All payments in database:', allPayments.length);
+      res.json({
+        total: allPayments.length,
+        payments: allPayments
+      });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // Get user payment history
   app.get('/api/user/payments', authenticateToken, async (req: AuthRequest, res) => {
     try {
+      console.log('Fetching payments for user:', req.user!.id);
       const payments = await Payment.find({ userId: req.user!.id }).sort({ createdAt: -1 });
+      console.log('Found payments:', payments.length);
       res.json(payments);
     } catch (error) {
+      console.error('Payment history error:', error);
       res.status(500).json({ error: 'Failed to fetch payments' });
     }
   });
