@@ -149,10 +149,6 @@ export async function registerRoutes(
       console.log('=== SEND OTP REQUEST ===');
       console.log('Email:', email);
       console.log('Name:', name);
-      console.log('Environment check:');
-      console.log('- EMAIL_USER:', process.env.EMAIL_USER);
-      console.log('- EMAIL_PASS set:', !!process.env.EMAIL_PASS);
-      console.log('- DATABASE_URL set:', !!process.env.DATABASE_URL);
       console.log('========================');
       
       const existing = await storage.getUserByEmail(email);
@@ -168,21 +164,12 @@ export async function registerRoutes(
       await OTP.deleteMany({ email }); // Remove old OTPs
       await OTP.create({ email, otp, expiresAt, userData: { email, password, name } });
       
-      // Always respond with success, send email in background
-      res.json({ message: "OTP sent to email. Please check your inbox." });
-      
-      // Send email in background - don't let it fail the request
-      console.log('Attempting to send OTP email...');
-      try {
-        await sendOTP(email, otp);
-        console.log('✅ OTP email sent successfully to:', email);
-      } catch (emailError) {
-        console.error('❌ Email sending failed:', emailError.message);
-        console.error('Full email error:', emailError);
-        console.log('🔐 OTP for', email, ':', otp, '(Email failed - using console)');
-      }
-      
-      console.log('OTP process completed for:', email);
+      // For now, return OTP in response for testing
+      res.json({ 
+        message: "OTP generated successfully. Check console or use the OTP below for testing.",
+        otp: otp, // Remove this in production
+        email: email
+      });
       
     } catch (err) {
       console.error('Send OTP error:', err);

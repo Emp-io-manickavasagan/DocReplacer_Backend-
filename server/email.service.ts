@@ -6,6 +6,8 @@ const transporter = nodemailer.createTransport({
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
+  debug: true,
+  logger: true
 });
 
 export const sendOTP = async (email: string, otp: string) => {
@@ -24,8 +26,13 @@ export const sendOTP = async (email: string, otp: string) => {
     
     // Test transporter connection
     console.log('Testing email connection...');
-    await transporter.verify();
-    console.log('✅ Email connection verified');
+    try {
+      await transporter.verify();
+      console.log('✅ Email connection verified');
+    } catch (verifyError) {
+      console.error('❌ Email connection failed:', verifyError);
+      throw verifyError;
+    }
     
     const mailOptions = {
       from: `"DocReplacer" <${process.env.EMAIL_USER}>`,
