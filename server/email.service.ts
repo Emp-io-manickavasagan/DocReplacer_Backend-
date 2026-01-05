@@ -15,14 +15,20 @@ export const sendOTP = async (email: string, otp: string) => {
     console.log('OTP Code:', otp);
     console.log('Email User:', process.env.EMAIL_USER);
     console.log('Email Pass Set:', !!process.env.EMAIL_PASS);
+    console.log('Email Pass Length:', process.env.EMAIL_PASS?.length);
     console.log('NODE_ENV:', process.env.NODE_ENV);
     console.log('===================');
     
     // Always show OTP in console for production debugging
     console.log(`\n🔐 OTP for ${email}: ${otp}\n`);
     
+    // Test transporter connection
+    console.log('Testing email connection...');
+    await transporter.verify();
+    console.log('✅ Email connection verified');
+    
     const mailOptions = {
-      from: process.env.EMAIL_USER,
+      from: `"DocReplacer" <${process.env.EMAIL_USER}>`,
       to: email,
       subject: 'DocReplacer - Email Verification OTP',
       html: `
@@ -40,11 +46,23 @@ export const sendOTP = async (email: string, otp: string) => {
       `,
     };
 
+    console.log('Sending email with options:', {
+      from: mailOptions.from,
+      to: mailOptions.to,
+      subject: mailOptions.subject
+    });
+    
     const result = await transporter.sendMail(mailOptions);
     console.log('✅ Email sent successfully to:', email, 'MessageID:', result.messageId);
     return result;
   } catch (error) {
-    console.error('❌ Email sending failed:', error.message);
+    console.error('❌ Email sending failed:', error);
+    console.error('Error details:', {
+      code: error.code,
+      command: error.command,
+      response: error.response,
+      responseCode: error.responseCode
+    });
     
     // Try to send email anyway - throw error to trigger retry
     throw new Error(`Failed to send OTP email: ${error.message}`);

@@ -126,13 +126,17 @@ export async function registerRoutes(
       res.json({ message: "OTP sent to email. Please check your inbox." });
       
       // Send email in background - don't let it fail the request
+      console.log('Attempting to send OTP email...');
       try {
         await sendOTP(email, otp);
         console.log('✅ OTP email sent successfully to:', email);
       } catch (emailError) {
         console.error('❌ Email sending failed:', emailError.message);
+        console.error('Full email error:', emailError);
         console.log('🔐 OTP for', email, ':', otp, '(Email failed - using console)');
       }
+      
+      console.log('OTP process completed for:', email);
       
     } catch (err) {
       console.error('Send OTP error:', err);
