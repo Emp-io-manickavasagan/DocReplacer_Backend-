@@ -41,8 +41,17 @@ export async function registerRoutes(
     }
   }, 5000); // 5 seconds after startup
 
-  // Health check endpoint
+  // Health check endpoint (before auth limiter)
   app.get('/health', (req, res) => {
+    res.json({ 
+      status: 'ok', 
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      environment: process.env.NODE_ENV 
+    });
+  });
+
+  app.get('/api/health', (req, res) => {
     res.json({ 
       status: 'ok', 
       timestamp: new Date().toISOString(),
@@ -54,29 +63,37 @@ export async function registerRoutes(
   // === AUTH ===
   app.post('/api/auth/send-otp', async (req, res) => {
     try {
+      console.log('Send OTP request received:', { email: req.body.email, hasPassword: !!req.body.password, hasName: !!req.body.name });
+      
       const { email, password, name } = req.body;
       
       if (!email || !password || !name) {
+        console.log('Missing required fields');
         return res.status(400).json({ message: "Email, password, and name are required" });
       }
       
       if (password.length < 8) {
+        console.log('Password too short');
         return res.status(400).json({ message: "Password must be at least 8 characters long" });
       }
       
       const existing = await storage.getUserByEmail(email);
       if (existing) {
+        console.log('Email already exists');
         return res.status(400).json({ message: "Email already exists" });
       }
 
       const otp = generateOTP();
       const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
       
+      console.log('Generated OTP, saving to database...');
       await OTP.deleteMany({ email });
       await OTP.create({ email, otp, expiresAt, userData: { email, password, name } });
       
+      console.log('Attempting to send OTP email...');
       await sendOTP(email, otp);
       
+      console.log('OTP sent successfully');
       res.json({ message: "OTP sent successfully" });
       
     } catch (err) {

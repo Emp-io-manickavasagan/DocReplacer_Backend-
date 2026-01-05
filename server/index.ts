@@ -17,18 +17,22 @@ for (const envVar of requiredEnvVars) {
 const app = express();
 const httpServer = createServer(app);
 
-// Rate limiting
+// Rate limiting - more lenient for production
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 100, // limit each IP to 100 requests per windowMs
+  max: process.env.NODE_ENV === 'production' ? 200 : 100, // Higher limit for production
   message: 'Too many requests from this IP, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
+  skip: (req) => {
+    // Skip rate limiting for health checks
+    return req.path === '/health';
+  }
 });
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: 5, // limit each IP to 5 auth requests per windowMs
+  max: process.env.NODE_ENV === 'production' ? 10 : 5, // Higher limit for production
   message: 'Too many authentication attempts, please try again later.',
   standardHeaders: true,
   legacyHeaders: false,
@@ -39,11 +43,15 @@ app.use(limiter);
 
 app.use((req, res, next) => {
   const allowedOrigins = process.env.NODE_ENV === 'production' 
-    ? ['https://docreplacer.vercel.app', 'https://docreplacer-frontend.onrender.com']
-    : ['http://localhost:3000', 'http://localhost:5173'];
+    ? ['https://docreplacer.vercel.app', 'https://docreplacer-frontend.onrender.com', 'https://docreplacer.netlify.app']
+    : ['http://localhost:3000', 'http://localhost:5173', 'http://localhost:4173'];
   
   const origin = req.headers.origin;
-  if (origin && allowedOrigins.includes(origin)) {
+  
+  // Allow all origins in development or if no origin (direct API calls)
+  if (process.env.NODE_ENV !== 'production' || !origin) {
+    res.header('Access-Control-Allow-Origin', '*');
+  } else if (allowedOrigins.includes(origin)) {
     res.header('Access-Control-Allow-Origin', origin);
   }
   
