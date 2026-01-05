@@ -41,6 +41,27 @@ export async function registerRoutes(
     }
   }, 5000); // 5 seconds after startup
 
+  // Test route to get OTP for debugging
+  app.get('/api/debug/otp/:email', async (req, res) => {
+    try {
+      const { email } = req.params;
+      const otpRecord = await OTP.findOne({ email }).sort({ createdAt: -1 });
+      
+      if (!otpRecord) {
+        return res.status(404).json({ message: 'No OTP found for this email' });
+      }
+      
+      res.json({ 
+        email, 
+        otp: otpRecord.otp, 
+        expiresAt: otpRecord.expiresAt,
+        isExpired: otpRecord.expiresAt < new Date()
+      });
+    } catch (error) {
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // Test route
   app.get('/api/test', (req, res) => {
     console.log('Test route hit!');
@@ -102,13 +123,16 @@ export async function registerRoutes(
       await OTP.create({ email, otp, expiresAt, userData: { email, password, name } });
       
       // Always respond with success, send email in background
-      res.json({ message: "OTP sent to email. Check console for OTP if email fails." });
+      res.json({ message: "OTP sent to email. Please check your inbox." });
       
       // Send email in background - don't let it fail the request
-      sendOTP(email, otp).catch(error => {
-        console.error('Email sending failed, but OTP saved to database:', error);
-        console.log('🔐 OTP for', email, ':', otp);
-      });
+      try {
+        await sendOTP(email, otp);
+        console.log('✅ OTP email sent successfully to:', email);
+      } catch (emailError) {
+        console.error('❌ Email sending failed:', emailError.message);
+        console.log('🔐 OTP for', email, ':', otp, '(Email failed - using console)');
+      }
       
     } catch (err) {
       console.error('Send OTP error:', err);

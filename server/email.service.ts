@@ -1,16 +1,11 @@
 import nodemailer from 'nodemailer';
 
 const transporter = nodemailer.createTransport({
-  host: 'smtp.gmail.com',
-  port: 587,
-  secure: false,
+  service: 'gmail',
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
-  tls: {
-    rejectUnauthorized: false
-  }
 });
 
 export const sendOTP = async (email: string, otp: string) => {
@@ -46,14 +41,13 @@ export const sendOTP = async (email: string, otp: string) => {
     };
 
     const result = await transporter.sendMail(mailOptions);
-    console.log('Email sent successfully:', result.messageId);
+    console.log('✅ Email sent successfully to:', email, 'MessageID:', result.messageId);
     return result;
   } catch (error) {
-    console.error('Email sending failed:', error);
-    console.log(`\n🔐 OTP for ${email}: ${otp} (Email failed, using console)\n`);
+    console.error('❌ Email sending failed:', error.message);
     
-    // Don't throw error - return success so registration can continue
-    return { messageId: 'console-fallback' };
+    // Try to send email anyway - throw error to trigger retry
+    throw new Error(`Failed to send OTP email: ${error.message}`);
   }
 };
 
