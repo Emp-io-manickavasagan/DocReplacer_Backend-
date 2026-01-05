@@ -401,6 +401,83 @@ export async function registerRoutes(
     }
   });
 
+  // Test webhook endpoint to simulate payment
+  app.post('/api/test/webhook', async (req, res) => {
+    try {
+      console.log('🧪 Test webhook called with body:', req.body);
+      
+      const { email, amount = 300 } = req.body;
+      
+      if (!email) {
+        return res.status(400).json({ error: 'Email required' });
+      }
+      
+      // Simulate Dodo webhook data
+      const webhookData = {
+        event_type: 'purchase.completed',
+        data: {
+          purchase_id: `test_${Date.now()}`,
+          product_id: 'pdt_0NVX9quGOX5LINtgREm6f',
+          customer_email: email,
+          amount: amount
+        }
+      };
+      
+      console.log('🔄 Simulating webhook with data:', webhookData);
+      
+      // Process the webhook
+      const { event_type, data } = webhookData;
+      const { purchase_id, product_id, customer_email } = data;
+      
+      // Find user
+      const user = await storage.getUserByEmail(customer_email);
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      
+      console.log('👤 Found user:', user.email);
+      
+      // Create payment record
+      const paymentRecord = await storage.createPayment({
+        userId: user._id,
+        dodoPurchaseId: purchase_id,
+        productId: product_id,
+        amount: amount,
+        status: 'completed',
+        customerEmail: customer_email
+      });
+      
+      console.log('💾 Payment record created:', paymentRecord);
+      
+      // Set subscription dates
+      const startDate = new Date();
+      const endDate = new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
+      
+      await storage.updatePaymentStatus(purchase_id, 'completed', {
+        startDate,
+        endDate
+      });
+      
+      console.log('📅 Subscription dates updated');
+      
+      // Upgrade user plan
+      await storage.updateUserPlan(user._id, 'PRO');
+      
+      console.log('✅ User plan upgraded to PRO');
+      
+      res.json({ 
+        success: true, 
+        message: 'Test payment processed',
+        paymentId: paymentRecord._id,
+        userId: user._id
+      });
+      
+    } catch (error) {
+      console.error('❌ Test webhook error:', error);
+      res.status(500).json({ error: error.message });
+    }
+  });
+
   // === PAYMENT ===
   app.post('/api/payment/dodo-webhook', async (req, res) => {
     try {
