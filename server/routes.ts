@@ -78,6 +78,16 @@ export async function registerRoutes(
   app.post('/api/auth/send-otp', async (req, res) => {
     try {
       const { email, password, name } = req.body;
+      
+      console.log('=== SEND OTP REQUEST ===');
+      console.log('Email:', email);
+      console.log('Name:', name);
+      console.log('Environment check:');
+      console.log('- EMAIL_USER:', process.env.EMAIL_USER);
+      console.log('- EMAIL_PASS set:', !!process.env.EMAIL_PASS);
+      console.log('- DATABASE_URL set:', !!process.env.DATABASE_URL);
+      console.log('========================');
+      
       const existing = await storage.getUserByEmail(email);
       if (existing) {
         return res.status(400).json({ message: "Email already exists" });
@@ -86,14 +96,23 @@ export async function registerRoutes(
       const otp = generateOTP();
       const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
       
+      console.log('Generated OTP:', otp, 'for email:', email);
+      
       await OTP.deleteMany({ email }); // Remove old OTPs
       await OTP.create({ email, otp, expiresAt, userData: { email, password, name } });
       
-      await sendOTP(email, otp);
-      res.json({ message: "OTP sent to email" });
+      // Always respond with success, send email in background
+      res.json({ message: "OTP sent to email. Check console for OTP if email fails." });
+      
+      // Send email in background - don't let it fail the request
+      sendOTP(email, otp).catch(error => {
+        console.error('Email sending failed, but OTP saved to database:', error);
+        console.log('🔐 OTP for', email, ':', otp);
+      });
+      
     } catch (err) {
-      console.error(err);
-      res.status(500).json({ message: "Failed to send OTP" });
+      console.error('Send OTP error:', err);
+      res.status(500).json({ message: "Failed to send OTP", error: err.message });
     }
   });
 
