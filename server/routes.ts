@@ -62,6 +62,52 @@ export async function registerRoutes(
     }
   });
 
+  // Test endpoint to manually upgrade user plan
+  app.post('/api/test/upgrade-plan', async (req, res) => {
+    try {
+      const { email, plan = 'PRO' } = req.body;
+      
+      console.log('Manual plan upgrade request:', { email, plan });
+      
+      const user = await storage.getUserByEmail(email);
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      
+      // Update user plan
+      await storage.updateUserPlan(user._id, plan);
+      
+      // Set plan expiry (30 days from now)
+      const startDate = new Date();
+      const endDate = new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
+      
+      // Create a test payment record
+      await storage.createPayment({
+        userId: user._id,
+        dodoPurchaseId: `test_${Date.now()}`,
+        productId: 'test_product',
+        amount: 300, // $3.00
+        status: 'completed',
+        customerEmail: email
+      });
+      
+      console.log('Plan upgraded successfully for user:', email, 'to plan:', plan);
+      
+      res.json({ 
+        success: true, 
+        message: `Plan upgraded to ${plan}`,
+        user: {
+          email: user.email,
+          plan: plan,
+          planExpiresAt: endDate
+        }
+      });
+    } catch (error) {
+      console.error('Manual plan upgrade error:', error);
+      res.status(500).json({ error: 'Plan upgrade failed' });
+    }
+  });
+
   // Test route
   app.get('/api/test', (req, res) => {
     console.log('Test route hit!');
@@ -358,31 +404,32 @@ export async function registerRoutes(
   // === PAYMENT ===
   app.post('/api/payment/dodo-webhook', async (req, res) => {
     try {
-      // Validate webhook signature here in production
       const { event_type, data } = req.body;
       
-      console.log('Dodo webhook received:', { event_type, data });
+      console.log('🔔 Dodo webhook received:', { event_type, data });
       
       if (event_type === 'purchase.completed') {
         const { purchase_id, product_id, customer_email, amount } = data;
         
+        console.log('💳 Processing payment:', { purchase_id, customer_email, amount });
+        
         // Validate required fields
         if (!purchase_id || !customer_email || !amount) {
+          console.error('❌ Missing required webhook data');
           return res.status(400).json({ error: 'Missing required webhook data' });
         }
         
         // Find user by email
         const user = await storage.getUserByEmail(customer_email);
         if (!user) {
-          console.error('User not found for email:', customer_email);
+          console.error('❌ User not found for email:', customer_email);
           return res.status(404).json({ error: 'User not found' });
         }
         
-        // Create payment record
-        const startDate = new Date();
-        const endDate = new Date(startDate.getTime() + 24 * 60 * 60 * 1000); // 1 day for testing
+        console.log('👤 Found user:', user.email, 'ID:', user._id);
         
-        await storage.createPayment({
+        // Create payment record first
+        const paymentRecord = await storage.createPayment({
           userId: user._id,
           dodoPurchaseId: purchase_id,
           productId: product_id,
@@ -391,21 +438,30 @@ export async function registerRoutes(
           customerEmail: customer_email
         });
         
+        console.log('💾 Payment record created:', paymentRecord._id);
+        
+        // Set subscription dates
+        const startDate = new Date();
+        const endDate = new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000); // 30 days
+        
         // Update payment with subscription dates
         await storage.updatePaymentStatus(purchase_id, 'completed', {
           startDate,
           endDate
         });
         
+        console.log('📅 Subscription dates set:', { startDate, endDate });
+        
         // Upgrade user to PRO
         await storage.updateUserPlan(user._id, 'PRO');
         
-        console.log('Payment processed successfully for user:', user.email);
+        console.log('✅ User plan upgraded to PRO for:', user.email);
+        console.log('🎉 Payment processing completed successfully');
       }
       
       res.json({ success: true });
     } catch (error) {
-      console.error('Dodo webhook error:', error);
+      console.error('❌ Dodo webhook error:', error);
       res.status(500).json({ error: 'Webhook processing failed' });
     }
   });
