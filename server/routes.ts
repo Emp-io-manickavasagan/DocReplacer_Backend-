@@ -41,115 +41,10 @@ export async function registerRoutes(
     }
   }, 5000); // 5 seconds after startup
 
-  // Test route to get OTP for debugging
-  app.get('/api/debug/otp/:email', async (req, res) => {
-    try {
-      const { email } = req.params;
-      const otpRecord = await OTP.findOne({ email }).sort({ createdAt: -1 });
-      
-      if (!otpRecord) {
-        return res.status(404).json({ message: 'No OTP found for this email' });
-      }
-      
-      res.json({ 
-        email, 
-        otp: otpRecord.otp, 
-        expiresAt: otpRecord.expiresAt,
-        isExpired: otpRecord.expiresAt < new Date()
-      });
-    } catch (error) {
-      res.status(500).json({ error: error.message });
-    }
-  });
-
-  // Test endpoint to manually upgrade user plan
-  app.post('/api/test/upgrade-plan', async (req, res) => {
-    try {
-      const { email, plan = 'PRO' } = req.body;
-      
-      console.log('Manual plan upgrade request:', { email, plan });
-      
-      const user = await storage.getUserByEmail(email);
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
-      
-      // Update user plan
-      await storage.updateUserPlan(user._id, plan);
-      
-      // Set plan expiry (30 days from now)
-      const startDate = new Date();
-      const endDate = new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
-      
-      // Create a test payment record
-      await storage.createPayment({
-        userId: user._id,
-        dodoPurchaseId: `test_${Date.now()}`,
-        productId: 'test_product',
-        amount: 300, // $3.00
-        status: 'completed',
-        customerEmail: email
-      });
-      
-      console.log('Plan upgraded successfully for user:', email, 'to plan:', plan);
-      
-      res.json({ 
-        success: true, 
-        message: `Plan upgraded to ${plan}`,
-        user: {
-          email: user.email,
-          plan: plan,
-          planExpiresAt: endDate
-        }
-      });
-    } catch (error) {
-      console.error('Manual plan upgrade error:', error);
-      res.status(500).json({ error: 'Plan upgrade failed' });
-    }
-  });
-
-  // Test route
-  app.get('/api/test', (req, res) => {
-    console.log('Test route hit!');
-    res.json({ message: 'API is working!' });
-  });
-
-  // Test email route
-  app.post('/api/test-email', async (req, res) => {
-    try {
-      const { email } = req.body;
-      const testOTP = '123456';
-      await sendOTP(email, testOTP);
-      res.json({ message: 'Test email sent successfully' });
-    } catch (error) {
-      console.error('Test email failed:', error);
-      res.status(500).json({ message: 'Test email failed', error: error.message });
-    }
-  });
-
-  // Debug route to list all routes
-  app.get('/api/debug/routes', (req, res) => {
-    const routes = [];
-    app._router.stack.forEach((middleware) => {
-      if (middleware.route) {
-        routes.push({
-          path: middleware.route.path,
-          methods: Object.keys(middleware.route.methods)
-        });
-      }
-    });
-    res.json({ routes });
-  });
-
   // === AUTH ===
   app.post('/api/auth/send-otp', async (req, res) => {
     try {
       const { email, password, name } = req.body;
-      
-      console.log('=== SEND OTP REQUEST ===');
-      console.log('Email:', email);
-      console.log('Name:', name);
-      console.log('========================');
       
       const existing = await storage.getUserByEmail(email);
       if (existing) {
@@ -157,19 +52,14 @@ export async function registerRoutes(
       }
 
       const otp = generateOTP();
-      const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10 minutes
+      const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
       
-      console.log('Generated OTP:', otp, 'for email:', email);
-      
-      await OTP.deleteMany({ email }); // Remove old OTPs
+      await OTP.deleteMany({ email });
       await OTP.create({ email, otp, expiresAt, userData: { email, password, name } });
       
-      // For now, return OTP in response for testing
-      res.json({ 
-        message: "OTP generated successfully. Check console or use the OTP below for testing.",
-        otp: otp, // Remove this in production
-        email: email
-      });
+      await sendOTP(email, otp);
+      
+      res.json({ message: "OTP sent successfully" });
       
     } catch (err) {
       console.error('Send OTP error:', err);
@@ -202,7 +92,6 @@ export async function registerRoutes(
 
   app.post('/api/auth/forgot-password', async (req, res) => {
     try {
-      console.log('Forgot password request:', req.body);
       const { email } = req.body;
       
       if (!email) {
@@ -217,19 +106,12 @@ export async function registerRoutes(
       const otp = generateOTP();
       const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
       
-      console.log('Generated OTP:', otp, 'for email:', email);
-      
       await OTP.deleteMany({ email });
       await OTP.create({ email, otp, expiresAt, userData: { type: 'password_reset' } });
       
-      // Send response immediately, then send email in background
-      res.json({ message: "Password reset OTP sent to email" });
+      await sendOTP(email, otp);
       
-      // Send email in background
-      console.log('Sending OTP email in background...');
-      sendOTP(email, otp).catch(error => {
-        console.error('Background email sending failed:', error);
-      });
+      res.json({ message: "Password reset OTP sent to email" });
       
     } catch (err) {
       console.error('Forgot password error:', err);
@@ -388,83 +270,6 @@ export async function registerRoutes(
     }
   });
 
-  // Test webhook endpoint to simulate payment
-  app.post('/api/test/webhook', async (req, res) => {
-    try {
-      console.log('🧪 Test webhook called with body:', req.body);
-      
-      const { email, amount = 300 } = req.body;
-      
-      if (!email) {
-        return res.status(400).json({ error: 'Email required' });
-      }
-      
-      // Simulate Dodo webhook data
-      const webhookData = {
-        event_type: 'purchase.completed',
-        data: {
-          purchase_id: `test_${Date.now()}`,
-          product_id: 'pdt_0NVX9quGOX5LINtgREm6f',
-          customer_email: email,
-          amount: amount
-        }
-      };
-      
-      console.log('🔄 Simulating webhook with data:', webhookData);
-      
-      // Process the webhook
-      const { event_type, data } = webhookData;
-      const { purchase_id, product_id, customer_email } = data;
-      
-      // Find user
-      const user = await storage.getUserByEmail(customer_email);
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
-      
-      console.log('👤 Found user:', user.email);
-      
-      // Create payment record
-      const paymentRecord = await storage.createPayment({
-        userId: user._id,
-        dodoPurchaseId: purchase_id,
-        productId: product_id,
-        amount: amount,
-        status: 'completed',
-        customerEmail: customer_email
-      });
-      
-      console.log('💾 Payment record created:', paymentRecord);
-      
-      // Set subscription dates
-      const startDate = new Date();
-      const endDate = new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
-      
-      await storage.updatePaymentStatus(purchase_id, 'completed', {
-        startDate,
-        endDate
-      });
-      
-      console.log('📅 Subscription dates updated');
-      
-      // Upgrade user plan
-      await storage.updateUserPlan(user._id, 'PRO');
-      
-      console.log('✅ User plan upgraded to PRO');
-      
-      res.json({ 
-        success: true, 
-        message: 'Test payment processed',
-        paymentId: paymentRecord._id,
-        userId: user._id
-      });
-      
-    } catch (error) {
-      console.error('❌ Test webhook error:', error);
-      res.status(500).json({ error: error.message });
-    }
-  });
-
   // === PAYMENT ===
   app.post('/api/payment/dodo-webhook', async (req, res) => {
     try {
@@ -563,20 +368,6 @@ export async function registerRoutes(
     // In a real app we'd filter by user
     const payments = await storage.getPayments();
     res.json(payments);
-  });
-
-  // Debug endpoint to check all payments
-  app.get('/api/debug/payments', async (req, res) => {
-    try {
-      const allPayments = await Payment.find().sort({ createdAt: -1 });
-      console.log('All payments in database:', allPayments.length);
-      res.json({
-        total: allPayments.length,
-        payments: allPayments
-      });
-    } catch (error) {
-      res.status(500).json({ error: error.message });
-    }
   });
 
   // Get user payment history
