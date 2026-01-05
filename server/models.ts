@@ -5,6 +5,7 @@ import { z } from 'zod';
 const userSchema = new mongoose.Schema({
   email: { type: String, required: true, unique: true },
   password: { type: String, required: true },
+  name: { type: String, required: true },
   role: { type: String, default: 'USER', enum: ['USER', 'ADMIN'] },
   plan: { type: String, default: 'FREE', enum: ['FREE', 'PRO'] },
   planActivatedAt: { type: Date, default: Date.now },
@@ -57,8 +58,8 @@ export const OTP = mongoose.model('OTP', otpSchema);
 // Zod schemas for validation
 export const insertUserSchema = z.object({
   email: z.string().email(),
-  password: z.string().min(6),
-  name: z.string().optional(),
+  password: z.string().min(8),
+  name: z.string().min(1),
 });
 
 export const insertDocumentSchema = z.object({
@@ -81,6 +82,7 @@ export type UserType = {
   _id: string;
   email: string;
   password: string;
+  name: string;
   role: string;
   plan: string;
   monthlyUsage: number;

@@ -16,12 +16,15 @@ export interface IStorage {
   updateUserRole(userId: string, role: string): Promise<void>;
   deleteUser(userId: string): Promise<void>;
   updateUserPassword(email: string, hashedPassword: string): Promise<void>;
+  updateUserProfile(userId: string, profile: { name: string }): Promise<void>;
   incrementMonthlyUsage(userId: string): Promise<void>;
   resetMonthlyUsage(userId: string): Promise<void>;
   
   // Document
   createDocument(doc: { userId: string; name: string; documentId: string; originalContent: string }): Promise<DocumentType>;
   getDocument(documentId: string): Promise<DocumentType | null>;
+  getUserDocuments(userId: string): Promise<DocumentType[]>;
+  deleteDocument(userId: string, documentId: string): Promise<void>;
   
   // Payment
   createPayment(payment: { userId: string; dodoPurchaseId: string; productId: string; amount: number; status: string; customerEmail?: string }): Promise<PaymentType>;
@@ -112,6 +115,10 @@ export class DatabaseStorage implements IStorage {
     await User.findOneAndUpdate({ email }, { password: hashedPassword });
   }
 
+  async updateUserProfile(userId: string, profile: { name: string }): Promise<void> {
+    await User.findByIdAndUpdate(userId, profile);
+  }
+
   async createDocument(doc: { userId: string; name: string; documentId: string; originalContent: string }): Promise<DocumentType> {
     const document = new Document(doc);
     return await document.save();
@@ -119,6 +126,14 @@ export class DatabaseStorage implements IStorage {
 
   async getDocument(documentId: string): Promise<DocumentType | null> {
     return await Document.findOne({ documentId });
+  }
+
+  async getUserDocuments(userId: string): Promise<DocumentType[]> {
+    return await Document.find({ userId }).sort({ createdAt: -1 });
+  }
+
+  async deleteDocument(userId: string, documentId: string): Promise<void> {
+    await Document.findOneAndDelete({ userId, documentId });
   }
 
   async createPayment(payment: { userId: string; dodoPurchaseId: string; productId: string; amount: number; status: string; customerEmail?: string }): Promise<PaymentType> {

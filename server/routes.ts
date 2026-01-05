@@ -41,10 +41,28 @@ export async function registerRoutes(
     }
   }, 5000); // 5 seconds after startup
 
+  // Health check endpoint
+  app.get('/health', (req, res) => {
+    res.json({ 
+      status: 'ok', 
+      timestamp: new Date().toISOString(),
+      uptime: process.uptime(),
+      environment: process.env.NODE_ENV 
+    });
+  });
+
   // === AUTH ===
   app.post('/api/auth/send-otp', async (req, res) => {
     try {
       const { email, password, name } = req.body;
+      
+      if (!email || !password || !name) {
+        return res.status(400).json({ message: "Email, password, and name are required" });
+      }
+      
+      if (password.length < 8) {
+        return res.status(400).json({ message: "Password must be at least 8 characters long" });
+      }
       
       const existing = await storage.getUserByEmail(email);
       if (existing) {
@@ -70,6 +88,11 @@ export async function registerRoutes(
   app.post('/api/auth/verify-otp', async (req, res) => {
     try {
       const { email, otp } = req.body;
+      
+      if (!email || !otp) {
+        return res.status(400).json({ message: "Email and OTP are required" });
+      }
+      
       const otpRecord = await OTP.findOne({ email, otp });
       
       if (!otpRecord || otpRecord.expiresAt < new Date()) {
@@ -85,7 +108,7 @@ export async function registerRoutes(
       const token = generateToken({ id: user._id, email: user.email, role: user.role, plan: user.plan });
       res.status(201).json({ token, user: { id: user._id, email: user.email, role: user.role, plan: user.plan } });
     } catch (err) {
-      console.error(err);
+      console.error('OTP verification error:', err);
       res.status(500).json({ message: "Verification failed" });
     }
   });
@@ -271,6 +294,60 @@ export async function registerRoutes(
   });
 
   // === PAYMENT ===
+  app.post('/api/payment/create-order', authenticateToken, async (req: AuthRequest, res) => {
+    try {
+      const { amount } = req.body;
+      
+      if (!amount || amount <= 0) {
+        return res.status(400).json({ error: 'Valid amount is required' });
+      }
+      
+      // Create order with Dodo Payments
+      const orderId = `order_${Date.now()}_${req.user!.id}`;
+      
+      res.json({
+        orderId,
+        amount,
+        currency: 'INR',
+        key: process.env.DODO_API_KEY
+      });
+    } catch (error) {
+      console.error('Create order error:', error);
+      res.status(500).json({ error: 'Failed to create payment order' });
+    }
+  });
+
+  app.post('/api/payment/verify', authenticateToken, async (req: AuthRequest, res) => {
+    try {
+      const { orderId, paymentId, status } = req.body;
+      
+      if (!orderId || !paymentId || !status) {
+        return res.status(400).json({ error: 'Missing payment verification data' });
+      }
+      
+      if (status === 'success') {
+        // Create payment record
+        await storage.createPayment({
+          userId: req.user!.id,
+          dodoPurchaseId: paymentId,
+          productId: 'pro_plan',
+          amount: 300,
+          status: 'completed',
+          customerEmail: req.user!.email
+        });
+        
+        // Upgrade user to PRO
+        await storage.updateUserPlan(req.user!.id, 'PRO');
+        
+        res.json({ success: true, message: 'Payment verified and plan upgraded' });
+      } else {
+        res.status(400).json({ error: 'Payment verification failed' });
+      }
+    } catch (error) {
+      console.error('Payment verification error:', error);
+      res.status(500).json({ error: 'Payment verification failed' });
+    }
+  });
   app.post('/api/payment/dodo-webhook', async (req, res) => {
     try {
       console.log('🔔 WEBHOOK RECEIVED - Raw body:', JSON.stringify(req.body, null, 2));
@@ -370,12 +447,81 @@ export async function registerRoutes(
     res.json(payments);
   });
 
-  // Get user payment history
+  // Get user documents
+  app.get('/api/user/documents', authenticateToken, async (req: AuthRequest, res) => {
+    try {
+      const documents = await storage.getUserDocuments(req.user!.id);
+      res.json(documents);
+    } catch (error) {
+      console.error('Get documents error:', error);
+      res.status(500).json({ error: 'Failed to fetch documents' });
+    }
+  });
+
+  // Delete document
+  app.delete('/api/user/documents/:documentId', authenticateToken, async (req: AuthRequest, res) => {
+    try {
+      const { documentId } = req.params;
+      await storage.deleteDocument(req.user!.id, documentId);
+      
+      // Clean up memory stores
+      fileBufferStore.delete(documentId);
+      paragraphMappings.delete(documentId);
+      
+      res.json({ success: true });
+    } catch (error) {
+      console.error('Delete document error:', error);
+      res.status(500).json({ error: 'Failed to delete document' });
+    }
+  });
+
+  // Change password
+  app.post('/api/user/change-password', authenticateToken, async (req: AuthRequest, res) => {
+    try {
+      const { currentPassword, newPassword } = req.body;
+      
+      if (!currentPassword || !newPassword) {
+        return res.status(400).json({ message: 'Current and new passwords are required' });
+      }
+      
+      if (newPassword.length < 8) {
+        return res.status(400).json({ message: 'New password must be at least 8 characters long' });
+      }
+      
+      const user = await storage.getUser(req.user!.id);
+      if (!user || !(await bcrypt.compare(currentPassword, user.password))) {
+        return res.status(400).json({ message: 'Current password is incorrect' });
+      }
+      
+      const hashedPassword = await bcrypt.hash(newPassword, 10);
+      await storage.updateUserPassword(user.email, hashedPassword);
+      
+      res.json({ message: 'Password changed successfully' });
+    } catch (error) {
+      console.error('Change password error:', error);
+      res.status(500).json({ error: 'Failed to change password' });
+    }
+  });
+
+  // Update profile
+  app.put('/api/user/profile', authenticateToken, async (req: AuthRequest, res) => {
+    try {
+      const { name } = req.body;
+      
+      if (!name) {
+        return res.status(400).json({ message: 'Name is required' });
+      }
+      
+      await storage.updateUserProfile(req.user!.id, { name });
+      res.json({ message: 'Profile updated successfully' });
+    } catch (error) {
+      console.error('Update profile error:', error);
+      res.status(500).json({ error: 'Failed to update profile' });
+    }
+  });
   app.get('/api/user/payments', authenticateToken, async (req: AuthRequest, res) => {
     try {
-      console.log('Fetching payments for user:', req.user!.id);
       const payments = await Payment.find({ userId: req.user!.id }).sort({ createdAt: -1 });
-      console.log('Found payments:', payments.length);
       res.json(payments);
     } catch (error) {
       console.error('Payment history error:', error);
