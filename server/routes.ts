@@ -49,13 +49,31 @@ export async function registerRoutes(
     });
   });
 
-  app.get('/api/health', (req, res) => {
-    res.json({ 
-      status: 'ok', 
-      timestamp: new Date().toISOString(),
-      uptime: process.uptime(),
-      environment: process.env.NODE_ENV 
-    });
+  app.get('/api/health', async (req, res) => {
+    try {
+      const userCount = await storage.getUsers().then(users => users.length);
+      res.json({ 
+        status: 'ok', 
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime(),
+        environment: process.env.NODE_ENV,
+        database: {
+          connected: true,
+          userCount: userCount
+        }
+      });
+    } catch (error) {
+      res.json({ 
+        status: 'error', 
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime(),
+        environment: process.env.NODE_ENV,
+        database: {
+          connected: false,
+          error: error.message
+        }
+      });
+    }
   });
 
   // === AUTH ===
@@ -479,32 +497,22 @@ export async function registerRoutes(
   });
   app.post('/api/payment/dodo-webhook', async (req, res) => {
     try {
-      const { event_type, data } = req.body;
+      const { type, data } = req.body;
       
       // Input validation
-      if (!event_type || !data || typeof event_type !== 'string') {
+      if (!type || !data || typeof type !== 'string') {
         return res.status(400).json({ error: 'Invalid webhook data' });
-      }
-      
-      // Log webhook events in development
-      if (process.env.NODE_ENV !== 'production') {
-        console.log(`Webhook received: ${event_type}`, data);
       }
       
       // Handle subscription activation events
       const activationEvents = [
-        'purchase.completed',
-        'payment.success', 
-        'payment.succeeded',
         'subscription.active',
-        'subscription.activate',
         'subscription.renewed'
       ];
       
       // Handle subscription update events
       const updateEvents = [
         'subscription.updated',
-        'subscription.update',
         'subscription.plan_changed'
       ];
       
@@ -512,53 +520,43 @@ export async function registerRoutes(
       const deactivationEvents = [
         'subscription.cancelled',
         'subscription.expired',
-        'subscription.failed',
-        'payment.cancelled',
-        'payment.failed'
-      ];
-      
-      // Handle refund events (LOG ONLY - Manual handling required)
-      const refundEvents = [
-        'refund.succeeded',
-        'dispute.accepted',
-        'dispute.won'
+        'subscription.failed'
       ];
       
       // Handle subscription hold events
       const holdEvents = [
-        'subscription.on_hold',
-        'payment.processing'
+        'subscription.on_hold'
       ];
       
-      if (activationEvents.includes(event_type)) {
+      if (activationEvents.includes(type)) {
         // ACTIVATE PRO PLAN
-        const { purchase_id, product_id, customer_email, amount, subscription_end_date } = data;
+        const { subscription_id, customer, status, next_billing_date, expires_at } = data;
         
-        if (!purchase_id || !customer_email) {
-          return res.status(400).json({ error: 'Missing required webhook data' });
+        if (!subscription_id || !customer?.email) {
+          return res.status(400).json({ error: 'Missing required subscription data' });
         }
         
         // Validate email format
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!emailRegex.test(customer_email)) {
+        if (!emailRegex.test(customer.email)) {
           return res.status(400).json({ error: 'Invalid email format' });
         }
         
-        const sanitizedEmail = customer_email.toLowerCase().trim();
+        const sanitizedEmail = customer.email.toLowerCase().trim();
         const user = await storage.getUserByEmail(sanitizedEmail);
         if (!user) {
           return res.status(404).json({ error: 'User not found' });
         }
         
         // Check if payment record already exists
-        let paymentRecord = await storage.getPaymentByPurchaseId(purchase_id);
+        let paymentRecord = await storage.getPaymentByPurchaseId(subscription_id);
         
         if (!paymentRecord) {
           paymentRecord = await storage.createPayment({
             userId: user._id,
-            dodoPurchaseId: purchase_id,
-            productId: product_id || 'pro_plan',
-            amount: amount || 300,
+            dodoPurchaseId: subscription_id,
+            productId: data.product_id || 'pro_plan',
+            amount: data.recurring_pre_tax_amount || 300,
             status: 'completed',
             customerEmail: sanitizedEmail
           });
@@ -566,79 +564,85 @@ export async function registerRoutes(
         
         // Set subscription dates
         const startDate = new Date();
-        const endDate = subscription_end_date ? new Date(subscription_end_date) : new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
+        const endDate = expires_at ? new Date(expires_at) : 
+                       next_billing_date ? new Date(next_billing_date) :
+                       new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
         
-        await storage.updatePaymentStatus(purchase_id, 'completed', { startDate, endDate });
+        await storage.updatePaymentStatus(subscription_id, 'completed', { startDate, endDate });
         await storage.updateUserPlan(user._id, 'PRO');
         
-        const redirectUrl = `${process.env.FRONTEND_URL || 'https://www.docreplacer.online'}/payment-success?purchase_id=${purchase_id}`;
+        const redirectUrl = `${process.env.FRONTEND_URL || 'https://www.docreplacer.online'}/payment-success?subscription_id=${subscription_id}`;
         
         res.json({ 
           success: true,
           redirect_url: redirectUrl,
-          message: `PRO plan activated via ${event_type}`,
+          message: `PRO plan activated via ${type}`,
           subscription_end_date: endDate.toISOString()
         });
         
-      } else if (updateEvents.includes(event_type)) {
+      } else if (updateEvents.includes(type)) {
         // UPDATE SUBSCRIPTION
-        const { purchase_id, customer_email, subscription_end_date, amount } = data;
+        const { subscription_id, customer, status, next_billing_date, expires_at } = data;
         
-        if (!customer_email) {
+        if (!customer?.email) {
           return res.status(400).json({ error: 'Missing customer email' });
         }
         
         // Validate email format
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!emailRegex.test(customer_email)) {
+        if (!emailRegex.test(customer.email)) {
           return res.status(400).json({ error: 'Invalid email format' });
         }
         
-        const sanitizedEmail = customer_email.toLowerCase().trim();
+        const sanitizedEmail = customer.email.toLowerCase().trim();
         const user = await storage.getUserByEmail(sanitizedEmail);
         if (!user) {
           return res.status(404).json({ error: 'User not found' });
         }
         
-        // Update subscription if purchase_id provided
-        if (purchase_id) {
+        // Update subscription if subscription_id provided
+        if (subscription_id) {
           const startDate = new Date();
-          const endDate = subscription_end_date ? new Date(subscription_end_date) : new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
+          const endDate = expires_at ? new Date(expires_at) : 
+                         next_billing_date ? new Date(next_billing_date) :
+                         new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
           
-          await storage.updatePaymentStatus(purchase_id, 'completed', { startDate, endDate });
+          await storage.updatePaymentStatus(subscription_id, 'completed', { startDate, endDate });
         }
         
-        // Keep PRO plan active
-        await storage.updateUserPlan(user._id, 'PRO');
+        // Keep PRO plan active if subscription is active
+        if (status === 'active' || status === 'pending') {
+          await storage.updateUserPlan(user._id, 'PRO');
+        }
         
         res.json({ 
           success: true,
-          message: `Subscription updated via ${event_type}`
+          message: `Subscription updated via ${type}`
         });
         
-      } else if (deactivationEvents.includes(event_type)) {
+      } else if (deactivationEvents.includes(type)) {
         // DEACTIVATE PRO PLAN
-        const { customer_email, purchase_id } = data;
+        const { subscription_id, customer } = data;
         
-        if (!customer_email) {
+        if (!customer?.email) {
           return res.status(400).json({ error: 'Missing customer email' });
         }
         
         // Validate email format
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!emailRegex.test(customer_email)) {
+        if (!emailRegex.test(customer.email)) {
           return res.status(400).json({ error: 'Invalid email format' });
         }
         
-        const sanitizedEmail = customer_email.toLowerCase().trim();
+        const sanitizedEmail = customer.email.toLowerCase().trim();
         const user = await storage.getUserByEmail(sanitizedEmail);
         if (!user) {
           return res.status(404).json({ error: 'User not found' });
         }
         
-        // Update payment status if purchase_id provided
-        if (purchase_id) {
-          await storage.updatePaymentStatus(purchase_id, 'cancelled', {
+        // Update payment status if subscription_id provided
+        if (subscription_id) {
+          await storage.updatePaymentStatus(subscription_id, 'cancelled', {
             startDate: new Date(),
             endDate: new Date() // Expire immediately
           });
@@ -649,72 +653,47 @@ export async function registerRoutes(
         
         res.json({ 
           success: true,
-          message: `PRO plan deactivated via ${event_type}`
+          message: `PRO plan deactivated via ${type}`
         });
         
-      } else if (refundEvents.includes(event_type)) {
-        // LOG REFUND EVENTS - NO AUTOMATIC ACTION
-        const { customer_email, purchase_id, amount } = data;
-        
-        // Just log the refund event for manual review
-        if (process.env.NODE_ENV !== 'production') {
-          console.log(`REFUND EVENT - Manual review required:`, {
-            event_type,
-            customer_email,
-            purchase_id,
-            amount
-          });
-        }
-        
-        res.json({ 
-          success: true,
-          message: `Refund event logged: ${event_type} - Manual review required`
-        });
-        
-      } else if (holdEvents.includes(event_type)) {
+      } else if (holdEvents.includes(type)) {
         // HANDLE SUBSCRIPTION ON HOLD
-        const { customer_email, purchase_id } = data;
+        const { subscription_id, customer } = data;
         
-        if (!customer_email) {
+        if (!customer?.email) {
           return res.status(400).json({ error: 'Missing customer email' });
         }
         
         // Validate email format
         const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!emailRegex.test(customer_email)) {
+        if (!emailRegex.test(customer.email)) {
           return res.status(400).json({ error: 'Invalid email format' });
         }
         
-        const sanitizedEmail = customer_email.toLowerCase().trim();
+        const sanitizedEmail = customer.email.toLowerCase().trim();
         const user = await storage.getUserByEmail(sanitizedEmail);
         if (!user) {
           return res.status(404).json({ error: 'User not found' });
         }
         
         // Update payment status but keep plan active for now
-        if (purchase_id) {
-          await storage.updatePaymentStatus(purchase_id, 'on_hold');
+        if (subscription_id) {
+          await storage.updatePaymentStatus(subscription_id, 'on_hold');
         }
         
         res.json({ 
           success: true,
-          message: `Subscription on hold via ${event_type}`
+          message: `Subscription on hold via ${type}`
         });
         
       } else {
         // Log unsupported event types for debugging
-        if (process.env.NODE_ENV !== 'production') {
-          console.log(`Unsupported webhook event: ${event_type}`);
-        }
         res.json({ 
           success: true,
-          message: `Received unsupported event: ${event_type}`
+          message: `Received unsupported event: ${type}`
         });
       }
     } catch (error) {
-      if (process.env.NODE_ENV !== 'production') {
-        console.error('Webhook processing error:', error);
-      }
       res.status(500).json({ error: 'Webhook processing failed' });
     }
   });
@@ -973,18 +952,23 @@ export async function registerRoutes(
 
   // === ADMIN ===
   app.get(api.admin.users.path, authenticateToken, authorizeRole(['ADMIN']), async (req, res) => {
-    const users = await storage.getUsers();
-    // Remove sensitive data before sending
-    const sanitizedUsers = users.map(user => ({
-      _id: user._id,
-      email: user.email,
-      role: user.role,
-      plan: user.plan,
-      monthlyUsage: user.monthlyUsage,
-      createdAt: user.createdAt,
-      planExpiresAt: user.planExpiresAt
-    }));
-    res.json(sanitizedUsers);
+    try {
+      const users = await storage.getUsers();
+      
+      // Remove sensitive data before sending
+      const sanitizedUsers = users.map(user => ({
+        _id: user._id,
+        email: user.email,
+        role: user.role,
+        plan: user.plan,
+        monthlyUsage: user.monthlyUsage,
+        createdAt: user.createdAt,
+        planExpiresAt: user.planExpiresAt
+      }));
+      res.json(sanitizedUsers);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch users' });
+    }
   });
 
   app.put(api.admin.updatePlan.path, authenticateToken, authorizeRole(['ADMIN']), async (req: AuthRequest, res) => {
