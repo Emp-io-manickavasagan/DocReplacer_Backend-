@@ -7,7 +7,6 @@ const resend = process.env.RESEND_API_KEY && process.env.RESEND_API_KEY !== 'you
 export const sendOTP = async (email: string, otp: string) => {
   // If Resend is not configured, just log the OTP
   if (!resend) {
-    console.log(`📧 RESEND NOT CONFIGURED - OTP for ${email}: ${otp}`);
     return { id: 'console-fallback' };
   }
 
@@ -30,16 +29,11 @@ export const sendOTP = async (email: string, otp: string) => {
     });
 
     if (error) {
-      console.error('Resend error:', error);
-      console.log(`📧 EMAIL FAILED - OTP for ${email}: ${otp}`);
       throw new Error(`Resend error: ${error.message}`);
     }
 
-    console.log('Email sent successfully via Resend:', data?.id);
     return data;
   } catch (error) {
-    console.error('Email sending failed:', error.message);
-    console.log(`📧 EMAIL ERROR - OTP for ${email}: ${otp}`);
     throw new Error(`Failed to send OTP email: ${error.message}`);
   }
 };

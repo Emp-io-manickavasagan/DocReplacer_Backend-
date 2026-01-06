@@ -85,8 +85,11 @@ export type UserType = {
   name: string;
   role: string;
   plan: string;
+  planActivatedAt?: Date;
+  planExpiresAt?: Date;
   monthlyUsage: number;
   lastUsageReset: Date;
+  isVerified?: boolean;
   createdAt: Date;
 };
 

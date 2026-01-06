@@ -34,7 +34,6 @@ const allowlist = [
 async function buildAll() {
   await rm("dist", { recursive: true, force: true });
 
-  console.log("building server...");
   const pkg = JSON.parse(await readFile("package.json", "utf-8"));
   const allDeps = [
     ...Object.keys(pkg.dependencies || {}),
@@ -58,6 +57,5 @@ async function buildAll() {
 }
 
 buildAll().catch((err) => {
-  console.error(err);
   process.exit(1);
 });

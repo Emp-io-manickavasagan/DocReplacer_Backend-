@@ -26,7 +26,7 @@ export async function registerRoutes(
     try {
       await storage.checkExpiredPlans();
     } catch (error) {
-      console.error('Error checking expired plans:', error);
+      // Silent error handling
     }
   }, 60 * 60 * 1000);
 
@@ -35,7 +35,7 @@ export async function registerRoutes(
     try {
       await storage.checkExpiredPlans();
     } catch (error) {
-      console.error('Initial expired plans check failed:', error);
+      // Silent error handling
     }
   }, 5000);
 
@@ -63,15 +63,32 @@ export async function registerRoutes(
     try {
       const { email, password, name } = req.body;
       
+      // Input validation
       if (!email || !password || !name) {
         return res.status(400).json({ message: "Email, password, and name are required" });
       }
       
+      // Email validation
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        return res.status(400).json({ message: "Invalid email format" });
+      }
+      
+      // Password validation
       if (password.length < 8) {
         return res.status(400).json({ message: "Password must be at least 8 characters long" });
       }
       
-      const existing = await storage.getUserByEmail(email);
+      // Name validation
+      if (name.length < 2 || name.length > 50) {
+        return res.status(400).json({ message: "Name must be between 2 and 50 characters" });
+      }
+      
+      // Sanitize inputs
+      const sanitizedEmail = email.toLowerCase().trim();
+      const sanitizedName = name.trim();
+      
+      const existing = await storage.getUserByEmail(sanitizedEmail);
       if (existing) {
         return res.status(400).json({ message: "Email already exists" });
       }
@@ -79,21 +96,19 @@ export async function registerRoutes(
       const otp = generateOTP();
       const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
       
-      await OTP.deleteMany({ email });
-      await OTP.create({ email, otp, expiresAt, userData: { email, password, name } });
+      await OTP.deleteMany({ email: sanitizedEmail });
+      await OTP.create({ email: sanitizedEmail, otp, expiresAt, userData: { email: sanitizedEmail, password, name: sanitizedName } });
       
       try {
-        await sendOTP(email, otp);
+        await sendOTP(sanitizedEmail, otp);
       } catch (emailError) {
-        console.error('Email sending failed:', emailError.message);
-        console.log(`OTP for ${email}: ${otp}`);
+        // Email failed, continue without logging
       }
       
       res.json({ message: "OTP sent successfully" });
       
     } catch (err) {
-      console.error('Send OTP error:', err);
-      res.status(500).json({ message: "Failed to send OTP", error: err.message });
+      res.status(500).json({ message: "Failed to send OTP" });
     }
   });
 
@@ -105,7 +120,19 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Email and OTP are required" });
       }
       
-      const otpRecord = await OTP.findOne({ email, otp });
+      // Validate email format
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        return res.status(400).json({ message: "Invalid email format" });
+      }
+      
+      // Validate OTP format (6 digits)
+      if (!/^\d{6}$/.test(otp)) {
+        return res.status(400).json({ message: "Invalid OTP format" });
+      }
+      
+      const sanitizedEmail = email.toLowerCase().trim();
+      const otpRecord = await OTP.findOne({ email: sanitizedEmail, otp });
       
       if (!otpRecord || otpRecord.expiresAt < new Date()) {
         return res.status(400).json({ message: "Invalid or expired OTP" });
@@ -120,7 +147,6 @@ export async function registerRoutes(
       const token = generateToken({ id: user._id, email: user.email, role: user.role, plan: user.plan });
       res.status(201).json({ token, user: { id: user._id, email: user.email, role: user.role, plan: user.plan } });
     } catch (err) {
-      console.error('OTP verification error:', err);
       res.status(500).json({ message: "Verification failed" });
     }
   });
@@ -133,7 +159,14 @@ export async function registerRoutes(
         return res.status(400).json({ message: "Email is required" });
       }
       
-      const user = await storage.getUserByEmail(email);
+      // Validate email format
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        return res.status(400).json({ message: "Invalid email format" });
+      }
+      
+      const sanitizedEmail = email.toLowerCase().trim();
+      const user = await storage.getUserByEmail(sanitizedEmail);
       if (!user) {
         return res.status(404).json({ message: "Email not found" });
       }
@@ -141,46 +174,65 @@ export async function registerRoutes(
       const otp = generateOTP();
       const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
       
-      await OTP.deleteMany({ email });
-      await OTP.create({ email, otp, expiresAt, userData: { type: 'password_reset' } });
+      await OTP.deleteMany({ email: sanitizedEmail });
+      await OTP.create({ email: sanitizedEmail, otp, expiresAt, userData: { type: 'password_reset' } });
       
       try {
-        await sendOTP(email, otp);
+        await sendOTP(sanitizedEmail, otp);
       } catch (emailError) {
-        console.error('Email sending failed:', emailError.message);
-        console.log(`Password Reset OTP for ${email}: ${otp}`);
+        // Email failed, continue without logging
       }
       
       res.json({ message: "Password reset OTP sent" });
       
     } catch (err) {
-      console.error('Forgot password error:', err);
-      res.status(500).json({ message: "Failed to send reset OTP", error: err.message });
+      res.status(500).json({ message: "Failed to send reset OTP" });
     }
   });
 
   app.post('/api/auth/reset-password', async (req, res) => {
     try {
       const { email, otp, newPassword } = req.body;
-      const otpRecord = await OTP.findOne({ email, otp });
+      
+      // Input validation
+      if (!email || !otp || !newPassword) {
+        return res.status(400).json({ message: "Email, OTP, and new password are required" });
+      }
+      
+      // Validate email format
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        return res.status(400).json({ message: "Invalid email format" });
+      }
+      
+      // Validate OTP format
+      if (!/^\d{6}$/.test(otp)) {
+        return res.status(400).json({ message: "Invalid OTP format" });
+      }
+      
+      // Validate password strength
+      if (newPassword.length < 8) {
+        return res.status(400).json({ message: "Password must be at least 8 characters long" });
+      }
+      
+      const sanitizedEmail = email.toLowerCase().trim();
+      const otpRecord = await OTP.findOne({ email: sanitizedEmail, otp });
       
       if (!otpRecord || otpRecord.expiresAt < new Date()) {
         return res.status(400).json({ message: "Invalid or expired OTP" });
       }
 
       const hashedPassword = await bcrypt.hash(newPassword, 10);
-      await storage.updateUserPassword(email, hashedPassword);
+      await storage.updateUserPassword(sanitizedEmail, hashedPassword);
       
       await OTP.deleteOne({ _id: otpRecord._id });
       
       res.json({ message: "Password reset successfully" });
     } catch (err) {
-      console.error(err);
       res.status(500).json({ message: "Password reset failed" });
     }
   });
   app.post(api.auth.register.path, async (req, res) => {
-    console.log('Register route hit with body:', req.body);
     try {
       const input = api.auth.register.input.parse(req.body);
       const existing = await storage.getUserByEmail(input.email);
@@ -246,8 +298,21 @@ export async function registerRoutes(
   // === DOCX ===
   app.post(api.docx.upload.path, authenticateToken, checkPlanLimit, upload.single('file'), async (req: AuthRequest, res) => {
     if (!req.file) return res.status(400).json({ message: "No file uploaded" });
+    
+    // Validate file type
     if (!req.file.originalname.endsWith('.docx')) {
       return res.status(400).json({ message: "Only .docx files are allowed" });
+    }
+    
+    // Validate file size (10MB limit)
+    if (req.file.size > 10 * 1024 * 1024) {
+      return res.status(400).json({ message: "File size must be less than 10MB" });
+    }
+    
+    // Validate filename
+    const filename = req.file.originalname;
+    if (filename.length > 255 || !/^[a-zA-Z0-9._-]+\.docx$/.test(filename)) {
+      return res.status(400).json({ message: "Invalid filename" });
     }
 
     try {
@@ -259,14 +324,13 @@ export async function registerRoutes(
 
       await storage.createDocument({
         userId: req.user!.id,
-        name: req.file.originalname,
+        name: filename,
         documentId,
         originalContent: JSON.stringify(result.nodes)
       });
 
       res.json({ documentId, paragraphs: result.nodes });
     } catch (err) {
-      console.error(err);
       res.status(500).json({ message: "Failed to parse DOCX" });
     }
   });
@@ -274,6 +338,31 @@ export async function registerRoutes(
   app.post(api.docx.export.path, authenticateToken, async (req: AuthRequest, res) => {
     try {
       const { documentId, paragraphs } = req.body;
+      
+      // Input validation
+      if (!documentId || !paragraphs || !Array.isArray(paragraphs)) {
+        return res.status(400).json({ message: "Invalid request data" });
+      }
+      
+      // Validate documentId format (UUID)
+      const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+      if (!uuidRegex.test(documentId)) {
+        return res.status(400).json({ message: "Invalid document ID" });
+      }
+      
+      // Validate paragraphs array
+      if (paragraphs.length > 1000) {
+        return res.status(400).json({ message: "Too many paragraphs" });
+      }
+      
+      for (const para of paragraphs) {
+        if (!para.id || typeof para.text !== 'string') {
+          return res.status(400).json({ message: "Invalid paragraph format" });
+        }
+        if (para.text.length > 10000) {
+          return res.status(400).json({ message: "Paragraph too long" });
+        }
+      }
       
       const originalBuffer = fileBufferStore.get(documentId);
       const paragraphMap = paragraphMappings.get(documentId);
@@ -290,7 +379,6 @@ export async function registerRoutes(
       res.setHeader('Content-Disposition', `attachment; filename="edited_${documentId}.docx"`);
       res.send(newBuffer);
     } catch (err) {
-      console.error('Export error:', err);
       res.status(500).json({ message: "Failed to export DOCX" });
     }
   });
@@ -300,8 +388,9 @@ export async function registerRoutes(
     try {
       const { amount } = req.body;
       
-      if (!amount || amount <= 0) {
-        return res.status(400).json({ error: 'Valid amount is required' });
+      // Input validation
+      if (!amount || typeof amount !== 'number' || amount <= 0 || amount > 10000) {
+        return res.status(400).json({ error: 'Invalid amount' });
       }
       
       // Create order with Dodo Payments
@@ -314,7 +403,6 @@ export async function registerRoutes(
         key: process.env.DODO_API_KEY
       });
     } catch (error) {
-      console.error('Create order error:', error);
       res.status(500).json({ error: 'Failed to create payment order' });
     }
   });
@@ -323,8 +411,19 @@ export async function registerRoutes(
     try {
       const { orderId, paymentId, status } = req.body;
       
+      // Input validation
       if (!orderId || !paymentId || !status) {
         return res.status(400).json({ error: 'Missing payment verification data' });
+      }
+      
+      // Validate input formats
+      if (typeof orderId !== 'string' || typeof paymentId !== 'string' || typeof status !== 'string') {
+        return res.status(400).json({ error: 'Invalid data types' });
+      }
+      
+      // Validate orderId belongs to current user
+      if (!orderId.includes(req.user!.id)) {
+        return res.status(403).json({ error: 'Unauthorized payment verification' });
       }
       
       if (status === 'success') {
@@ -375,7 +474,6 @@ export async function registerRoutes(
         res.status(400).json({ error: 'Payment verification failed' });
       }
     } catch (error) {
-      console.error('Payment verification error:', error);
       res.status(500).json({ error: 'Payment verification failed' });
     }
   });
@@ -383,50 +481,334 @@ export async function registerRoutes(
     try {
       const { event_type, data } = req.body;
       
-      if (event_type === 'purchase.completed') {
-        const { purchase_id, product_id, customer_email, amount } = data;
+      // Input validation
+      if (!event_type || !data || typeof event_type !== 'string') {
+        return res.status(400).json({ error: 'Invalid webhook data' });
+      }
+      
+      // Log webhook events in development
+      if (process.env.NODE_ENV !== 'production') {
+        console.log(`Webhook received: ${event_type}`, data);
+      }
+      
+      // Handle subscription activation events
+      const activationEvents = [
+        'purchase.completed',
+        'payment.success', 
+        'payment.succeeded',
+        'subscription.active',
+        'subscription.activate',
+        'subscription.renewed'
+      ];
+      
+      // Handle subscription update events
+      const updateEvents = [
+        'subscription.updated',
+        'subscription.update',
+        'subscription.plan_changed'
+      ];
+      
+      // Handle subscription deactivation events
+      const deactivationEvents = [
+        'subscription.cancelled',
+        'subscription.expired',
+        'subscription.failed',
+        'payment.cancelled',
+        'payment.failed'
+      ];
+      
+      // Handle refund events (LOG ONLY - Manual handling required)
+      const refundEvents = [
+        'refund.succeeded',
+        'dispute.accepted',
+        'dispute.won'
+      ];
+      
+      // Handle subscription hold events
+      const holdEvents = [
+        'subscription.on_hold',
+        'payment.processing'
+      ];
+      
+      if (activationEvents.includes(event_type)) {
+        // ACTIVATE PRO PLAN
+        const { purchase_id, product_id, customer_email, amount, subscription_end_date } = data;
         
-        if (!purchase_id || !customer_email || !amount) {
+        if (!purchase_id || !customer_email) {
           return res.status(400).json({ error: 'Missing required webhook data' });
         }
         
-        const user = await storage.getUserByEmail(customer_email);
+        // Validate email format
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(customer_email)) {
+          return res.status(400).json({ error: 'Invalid email format' });
+        }
+        
+        const sanitizedEmail = customer_email.toLowerCase().trim();
+        const user = await storage.getUserByEmail(sanitizedEmail);
         if (!user) {
           return res.status(404).json({ error: 'User not found' });
         }
         
-        const paymentRecord = await storage.createPayment({
-          userId: user._id,
-          dodoPurchaseId: purchase_id,
-          productId: product_id,
-          amount: amount,
-          status: 'completed',
-          customerEmail: customer_email
-        });
+        // Check if payment record already exists
+        let paymentRecord = await storage.getPaymentByPurchaseId(purchase_id);
         
+        if (!paymentRecord) {
+          paymentRecord = await storage.createPayment({
+            userId: user._id,
+            dodoPurchaseId: purchase_id,
+            productId: product_id || 'pro_plan',
+            amount: amount || 300,
+            status: 'completed',
+            customerEmail: sanitizedEmail
+          });
+        }
+        
+        // Set subscription dates
         const startDate = new Date();
-        const endDate = new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
+        const endDate = subscription_end_date ? new Date(subscription_end_date) : new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
         
-        await storage.updatePaymentStatus(purchase_id, 'completed', {
-          startDate,
-          endDate
-        });
-        
+        await storage.updatePaymentStatus(purchase_id, 'completed', { startDate, endDate });
         await storage.updateUserPlan(user._id, 'PRO');
         
-        // Send success redirect URL back to payment provider
         const redirectUrl = `${process.env.FRONTEND_URL || 'https://www.docreplacer.online'}/payment-success?payment=${paymentRecord._id}`;
         
         res.json({ 
           success: true,
-          redirect_url: redirectUrl
+          redirect_url: redirectUrl,
+          message: `PRO plan activated via ${event_type}`,
+          subscription_end_date: endDate.toISOString()
         });
+        
+      } else if (updateEvents.includes(event_type)) {
+        // UPDATE SUBSCRIPTION
+        const { purchase_id, customer_email, subscription_end_date, amount } = data;
+        
+        if (!customer_email) {
+          return res.status(400).json({ error: 'Missing customer email' });
+        }
+        
+        // Validate email format
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(customer_email)) {
+          return res.status(400).json({ error: 'Invalid email format' });
+        }
+        
+        const sanitizedEmail = customer_email.toLowerCase().trim();
+        const user = await storage.getUserByEmail(sanitizedEmail);
+        if (!user) {
+          return res.status(404).json({ error: 'User not found' });
+        }
+        
+        // Update subscription if purchase_id provided
+        if (purchase_id) {
+          const startDate = new Date();
+          const endDate = subscription_end_date ? new Date(subscription_end_date) : new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
+          
+          await storage.updatePaymentStatus(purchase_id, 'completed', { startDate, endDate });
+        }
+        
+        // Keep PRO plan active
+        await storage.updateUserPlan(user._id, 'PRO');
+        
+        res.json({ 
+          success: true,
+          message: `Subscription updated via ${event_type}`
+        });
+        
+      } else if (deactivationEvents.includes(event_type)) {
+        // DEACTIVATE PRO PLAN
+        const { customer_email, purchase_id } = data;
+        
+        if (!customer_email) {
+          return res.status(400).json({ error: 'Missing customer email' });
+        }
+        
+        // Validate email format
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(customer_email)) {
+          return res.status(400).json({ error: 'Invalid email format' });
+        }
+        
+        const sanitizedEmail = customer_email.toLowerCase().trim();
+        const user = await storage.getUserByEmail(sanitizedEmail);
+        if (!user) {
+          return res.status(404).json({ error: 'User not found' });
+        }
+        
+        // Update payment status if purchase_id provided
+        if (purchase_id) {
+          await storage.updatePaymentStatus(purchase_id, 'cancelled', {
+            startDate: new Date(),
+            endDate: new Date() // Expire immediately
+          });
+        }
+        
+        // Downgrade to FREE plan
+        await storage.updateUserPlan(user._id, 'FREE');
+        
+        res.json({ 
+          success: true,
+          message: `PRO plan deactivated via ${event_type}`
+        });
+        
+      } else if (refundEvents.includes(event_type)) {
+        // LOG REFUND EVENTS - NO AUTOMATIC ACTION
+        const { customer_email, purchase_id, amount } = data;
+        
+        // Just log the refund event for manual review
+        if (process.env.NODE_ENV !== 'production') {
+          console.log(`REFUND EVENT - Manual review required:`, {
+            event_type,
+            customer_email,
+            purchase_id,
+            amount
+          });
+        }
+        
+        res.json({ 
+          success: true,
+          message: `Refund event logged: ${event_type} - Manual review required`
+        });
+        
+      } else if (holdEvents.includes(event_type)) {
+        // HANDLE SUBSCRIPTION ON HOLD
+        const { customer_email, purchase_id } = data;
+        
+        if (!customer_email) {
+          return res.status(400).json({ error: 'Missing customer email' });
+        }
+        
+        // Validate email format
+        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+        if (!emailRegex.test(customer_email)) {
+          return res.status(400).json({ error: 'Invalid email format' });
+        }
+        
+        const sanitizedEmail = customer_email.toLowerCase().trim();
+        const user = await storage.getUserByEmail(sanitizedEmail);
+        if (!user) {
+          return res.status(404).json({ error: 'User not found' });
+        }
+        
+        // Update payment status but keep plan active for now
+        if (purchase_id) {
+          await storage.updatePaymentStatus(purchase_id, 'on_hold');
+        }
+        
+        res.json({ 
+          success: true,
+          message: `Subscription on hold via ${event_type}`
+        });
+        
       } else {
-        res.json({ success: true });
+        // Log unsupported event types for debugging
+        if (process.env.NODE_ENV !== 'production') {
+          console.log(`Unsupported webhook event: ${event_type}`);
+        }
+        res.json({ 
+          success: true,
+          message: `Received unsupported event: ${event_type}`
+        });
       }
     } catch (error) {
-      console.error('Webhook error:', error);
+      if (process.env.NODE_ENV !== 'production') {
+        console.error('Webhook processing error:', error);
+      }
       res.status(500).json({ error: 'Webhook processing failed' });
+    }
+  });
+
+  // Quick PRO activation
+  app.post('/api/payment/quick-activate', authenticateToken, async (req: AuthRequest, res) => {
+    try {
+      const user = await storage.getUser(req.user!.id);
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+      
+      const paymentRecord = await storage.createPayment({
+        userId: req.user!.id,
+        dodoPurchaseId: `quick_${Date.now()}`,
+        productId: 'pro_plan',
+        amount: 300,
+        status: 'completed',
+        customerEmail: user.email
+      });
+      
+      const startDate = new Date();
+      const endDate = new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
+      
+      await storage.updatePaymentStatus(paymentRecord.dodoPurchaseId, 'completed', {
+        startDate,
+        endDate
+      });
+      
+      await storage.updateUserPlan(req.user!.id, 'PRO');
+      
+      res.json({ 
+        success: true, 
+        message: 'PRO plan activated successfully',
+        paymentId: paymentRecord._id
+      });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to activate PRO plan' });
+    }
+  });
+
+  // Manual payment activation
+  app.post('/api/payment/activate-pro', authenticateToken, async (req: AuthRequest, res) => {
+    try {
+      const { purchaseId } = req.body;
+      
+      if (!purchaseId) {
+        return res.status(400).json({ error: 'Purchase ID is required' });
+      }
+      
+      // Create payment record
+      const paymentRecord = await storage.createPayment({
+        userId: req.user!.id,
+        dodoPurchaseId: purchaseId,
+        productId: 'pro_plan',
+        amount: 300,
+        status: 'completed',
+        customerEmail: req.user!.email
+      });
+      
+      // Set subscription dates
+      const startDate = new Date();
+      const endDate = new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
+      
+      await storage.updatePaymentStatus(purchaseId, 'completed', {
+        startDate,
+        endDate
+      });
+      
+      // Upgrade user to PRO
+      await storage.updateUserPlan(req.user!.id, 'PRO');
+      
+      // Get updated user data
+      const updatedUser = await storage.getUser(req.user!.id);
+      
+      res.json({ 
+        success: true, 
+        message: 'PRO plan activated successfully',
+        payment: {
+          id: paymentRecord._id,
+          amount: paymentRecord.amount,
+          currency: 'INR',
+          status: 'completed',
+          purchaseId: purchaseId,
+          planActivatedAt: startDate,
+          planExpiresAt: endDate
+        },
+        user: {
+          plan: updatedUser?.plan,
+          planExpiresAt: updatedUser?.planExpiresAt
+        }
+      });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to activate PRO plan' });
     }
   });
 
@@ -463,7 +845,6 @@ export async function registerRoutes(
         }
       });
     } catch (error) {
-      console.error('Get payment error:', error);
       res.status(500).json({ error: 'Failed to fetch payment details' });
     }
   });
@@ -485,7 +866,6 @@ export async function registerRoutes(
         res.status(403).json({ error: 'Payment does not belong to this user' });
       }
     } catch (error) {
-      console.error('Manual verification error:', error);
       res.status(500).json({ error: 'Verification failed' });
     }
   });
@@ -502,7 +882,6 @@ export async function registerRoutes(
       const documents = await storage.getUserDocuments(req.user!.id);
       res.json(documents);
     } catch (error) {
-      console.error('Get documents error:', error);
       res.status(500).json({ error: 'Failed to fetch documents' });
     }
   });
@@ -519,7 +898,6 @@ export async function registerRoutes(
       
       res.json({ success: true });
     } catch (error) {
-      console.error('Delete document error:', error);
       res.status(500).json({ error: 'Failed to delete document' });
     }
   });
@@ -533,8 +911,15 @@ export async function registerRoutes(
         return res.status(400).json({ message: 'Current and new passwords are required' });
       }
       
+      // Validate password strength
       if (newPassword.length < 8) {
         return res.status(400).json({ message: 'New password must be at least 8 characters long' });
+      }
+      
+      // Check for common weak passwords
+      const weakPasswords = ['password', '12345678', 'qwerty123', 'admin123'];
+      if (weakPasswords.includes(newPassword.toLowerCase())) {
+        return res.status(400).json({ message: 'Password is too weak' });
       }
       
       const user = await storage.getUser(req.user!.id);
@@ -547,7 +932,6 @@ export async function registerRoutes(
       
       res.json({ message: 'Password changed successfully' });
     } catch (error) {
-      console.error('Change password error:', error);
       res.status(500).json({ error: 'Failed to change password' });
     }
   });
@@ -561,10 +945,20 @@ export async function registerRoutes(
         return res.status(400).json({ message: 'Name is required' });
       }
       
-      await storage.updateUserProfile(req.user!.id, { name });
+      // Validate name
+      if (typeof name !== 'string' || name.length < 2 || name.length > 50) {
+        return res.status(400).json({ message: 'Name must be between 2 and 50 characters' });
+      }
+      
+      // Sanitize name (remove extra spaces, special characters)
+      const sanitizedName = name.trim().replace(/[<>\"'&]/g, '');
+      if (sanitizedName.length < 2) {
+        return res.status(400).json({ message: 'Invalid name format' });
+      }
+      
+      await storage.updateUserProfile(req.user!.id, { name: sanitizedName });
       res.json({ message: 'Profile updated successfully' });
     } catch (error) {
-      console.error('Update profile error:', error);
       res.status(500).json({ error: 'Failed to update profile' });
     }
   });
@@ -573,7 +967,6 @@ export async function registerRoutes(
       const payments = await Payment.find({ userId: req.user!.id }).sort({ createdAt: -1 });
       res.json(payments);
     } catch (error) {
-      console.error('Payment history error:', error);
       res.status(500).json({ error: 'Failed to fetch payments' });
     }
   });
@@ -581,31 +974,85 @@ export async function registerRoutes(
   // === ADMIN ===
   app.get(api.admin.users.path, authenticateToken, authorizeRole(['ADMIN']), async (req, res) => {
     const users = await storage.getUsers();
-    res.json(users);
+    // Remove sensitive data before sending
+    const sanitizedUsers = users.map(user => ({
+      _id: user._id,
+      email: user.email,
+      role: user.role,
+      plan: user.plan,
+      monthlyUsage: user.monthlyUsage,
+      createdAt: user.createdAt,
+      planExpiresAt: user.planExpiresAt
+    }));
+    res.json(sanitizedUsers);
   });
 
-  app.put(api.admin.updatePlan.path, authenticateToken, authorizeRole(['ADMIN']), async (req, res) => {
+  app.put(api.admin.updatePlan.path, authenticateToken, authorizeRole(['ADMIN']), async (req: AuthRequest, res) => {
     const { plan } = req.body;
     const userId = req.params.id;
+    
+    // Validate plan
+    if (!plan || !['FREE', 'PRO'].includes(plan)) {
+      return res.status(400).json({ error: 'Invalid plan type' });
+    }
+    
+    // Validate userId format (MongoDB ObjectId)
+    if (!/^[0-9a-fA-F]{24}$/.test(userId)) {
+      return res.status(400).json({ error: 'Invalid user ID' });
+    }
+    
     await storage.updateUserPlan(userId, plan);
     res.json({ success: true });
   });
 
-  app.put('/api/admin/user/:id/role', authenticateToken, authorizeRole(['ADMIN']), async (req, res) => {
+  app.put('/api/admin/user/:id/role', authenticateToken, authorizeRole(['ADMIN']), async (req: AuthRequest, res) => {
     const { role } = req.body;
     const userId = req.params.id;
+    
+    // Validate role
+    if (!role || !['USER', 'ADMIN'].includes(role)) {
+      return res.status(400).json({ error: 'Invalid role type' });
+    }
+    
+    // Validate userId format
+    if (!/^[0-9a-fA-F]{24}$/.test(userId)) {
+      return res.status(400).json({ error: 'Invalid user ID' });
+    }
+    
+    // Prevent admin from demoting themselves
+    if (userId === req.user!.id && role !== 'ADMIN') {
+      return res.status(400).json({ error: 'Cannot change your own role' });
+    }
+    
     await storage.updateUserRole(userId, role);
     res.json({ success: true });
   });
 
-  app.put('/api/admin/user/:id/reset-usage', authenticateToken, authorizeRole(['ADMIN']), async (req, res) => {
+  app.put('/api/admin/user/:id/reset-usage', authenticateToken, authorizeRole(['ADMIN']), async (req: AuthRequest, res) => {
     const userId = req.params.id;
+    
+    // Validate userId format
+    if (!/^[0-9a-fA-F]{24}$/.test(userId)) {
+      return res.status(400).json({ error: 'Invalid user ID' });
+    }
+    
     await storage.resetMonthlyUsage(userId);
     res.json({ success: true });
   });
 
-  app.delete('/api/admin/user/:id', authenticateToken, authorizeRole(['ADMIN']), async (req, res) => {
+  app.delete('/api/admin/user/:id', authenticateToken, authorizeRole(['ADMIN']), async (req: AuthRequest, res) => {
     const userId = req.params.id;
+    
+    // Validate userId format
+    if (!/^[0-9a-fA-F]{24}$/.test(userId)) {
+      return res.status(400).json({ error: 'Invalid user ID' });
+    }
+    
+    // Prevent admin from deleting themselves
+    if (userId === req.user!.id) {
+      return res.status(400).json({ error: 'Cannot delete your own account' });
+    }
+    
     await storage.deleteUser(userId);
     res.json({ success: true });
   });

@@ -42,7 +42,7 @@ export const checkPlanLimit = async (req: AuthRequest, res: Response, next: Next
   if (!user) return res.status(404).json({ message: "User not found" });
 
   const now = new Date();
-  const planActivatedAt = new Date(user.planActivatedAt || user.createdAt);
+  const planActivatedAt = user.planActivatedAt || user.createdAt;
   const daysSincePlanActivation = Math.floor((now.getTime() - planActivatedAt.getTime()) / (1000 * 60 * 60 * 24));
   
   // Check if 30 days have passed since plan activation
@@ -61,8 +61,10 @@ export const checkPlanLimit = async (req: AuthRequest, res: Response, next: Next
     
     // Refresh user data
     const updatedUser = await storage.getUser(req.user.id);
-    user.monthlyUsage = updatedUser?.monthlyUsage || 0;
-    user.plan = updatedUser?.plan || 'FREE';
+    if (updatedUser) {
+      user.monthlyUsage = updatedUser.monthlyUsage;
+      user.plan = updatedUser.plan;
+    }
   }
 
   const limits = {

@@ -8,15 +8,26 @@ import rateLimit from "express-rate-limit";
 
 // Validate required environment variables
 const requiredEnvVars = ['DATABASE_URL', 'JWT_SECRET'];
+const optionalEnvVars = ['RESEND_API_KEY', 'DODO_API_KEY', 'FRONTEND_URL'];
+
 for (const envVar of requiredEnvVars) {
   if (!process.env[envVar]) {
-    throw new Error(`Required environment variable ${envVar} is not set`);
+    console.error(`❌ CRITICAL: Required environment variable ${envVar} is not set`);
+    process.exit(1);
   }
 }
 
-// Warn about missing Resend API key
-if (!process.env.RESEND_API_KEY || process.env.RESEND_API_KEY === 'your_resend_api_key_here') {
-  console.warn('⚠️  RESEND_API_KEY not configured - OTPs will be logged to console only');
+// Warn about missing optional environment variables
+for (const envVar of optionalEnvVars) {
+  if (!process.env[envVar] || process.env[envVar] === `your_${envVar.toLowerCase()}_here`) {
+    console.warn(`⚠️  WARNING: Optional environment variable ${envVar} is not configured`);
+  }
+}
+
+// Validate JWT_SECRET strength
+if (process.env.JWT_SECRET && process.env.JWT_SECRET.length < 32) {
+  console.error('❌ CRITICAL: JWT_SECRET must be at least 32 characters long');
+  process.exit(1);
 }
 
 const app = express();
@@ -73,6 +84,12 @@ app.use((req, res, next) => {
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Content-Length, X-Requested-With');
   res.header('Access-Control-Allow-Credentials', 'true');
   
+  // Security headers
+  res.header('X-Content-Type-Options', 'nosniff');
+  res.header('X-Frame-Options', 'DENY');
+  res.header('X-XSS-Protection', '1; mode=block');
+  res.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+  
   if (req.method === 'OPTIONS') {
     res.sendStatus(200);
   } else {
@@ -103,7 +120,10 @@ export function log(message: string, source = "express") {
     hour12: true,
   });
 
-  console.log(`${formattedTime} [${source}] ${message}`);
+  // Only log in development
+  if (process.env.NODE_ENV !== 'production') {
+    console.log(`${formattedTime} [${source}] ${message}`);
+  }
 }
 
 app.use((req, res, next) => {
@@ -144,7 +164,6 @@ app.use((req, res, next) => {
       const message = err.message || "Internal Server Error";
 
       res.status(status).json({ message });
-      console.error('Server error:', err);
     });
 
     // importantly only setup vite in development and after
@@ -162,17 +181,13 @@ app.use((req, res, next) => {
     
     // Graceful shutdown
     process.on('SIGTERM', () => {
-      console.log('SIGTERM received, shutting down gracefully');
       httpServer.close(() => {
-        console.log('Process terminated');
         process.exit(0);
       });
     });
 
     process.on('SIGINT', () => {
-      console.log('SIGINT received, shutting down gracefully');
       httpServer.close(() => {
-        console.log('Process terminated');
         process.exit(0);
       });
     });
@@ -181,7 +196,6 @@ app.use((req, res, next) => {
       log(`serving on port ${port}`);
     });
   } catch (error) {
-    console.error('Failed to start server:', error);
     process.exit(1);
   }
 })();
