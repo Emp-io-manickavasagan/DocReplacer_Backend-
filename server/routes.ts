@@ -134,6 +134,36 @@ export async function registerRoutes(
     }
   });
 
+  // Promote existing user to admin (temporary endpoint for debugging)
+  app.post('/api/admin/promote-user', async (req, res) => {
+    try {
+      const { email } = req.body;
+      
+      if (!email) {
+        return res.status(400).json({ message: "Email is required" });
+      }
+      
+      const user = await storage.getUserByEmail(email.toLowerCase().trim());
+      if (!user) {
+        return res.status(404).json({ message: "User not found" });
+      }
+      
+      await storage.updateUserRole(user._id, 'ADMIN');
+      
+      res.json({ 
+        success: true, 
+        message: "User promoted to admin successfully",
+        user: {
+          id: user._id,
+          email: user.email,
+          role: 'ADMIN'
+        }
+      });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to promote user" });
+    }
+  });
+
   // === AUTH ===
   app.post('/api/auth/send-otp', async (req, res) => {
     try {
@@ -351,6 +381,8 @@ export async function registerRoutes(
     
     const user = await storage.getUser(req.user!.id);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
+    
+    console.log('User me endpoint - returning user:', { id: user._id, email: user.email, role: user.role, plan: user.plan });
     
     // Get subscription details
     const subscription = await storage.getUserSubscription(req.user!.id);

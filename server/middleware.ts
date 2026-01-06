@@ -17,12 +17,19 @@ export const authenticateToken = (req: AuthRequest, res: Response, next: NextFun
   const authHeader = req.headers['authorization'];
   const token = authHeader && authHeader.split(' ')[1];
 
+  console.log('Authentication check:', {
+    hasAuthHeader: !!authHeader,
+    hasToken: !!token
+  });
+
   if (!token) return res.status(401).json({ message: "Unauthorized" });
 
   jwt.verify(token, JWT_SECRET, (err: any, user: any) => {
     if (err) {
+      console.log('JWT verification failed:', err.message);
       return res.status(403).json({ message: "Forbidden" });
     }
+    console.log('JWT verified for user:', { id: user.id, email: user.email, role: user.role });
     req.user = user;
     next();
   });
@@ -30,6 +37,12 @@ export const authenticateToken = (req: AuthRequest, res: Response, next: NextFun
 
 export const authorizeRole = (roles: string[]) => {
   return (req: AuthRequest, res: Response, next: NextFunction) => {
+    console.log('Role authorization check:', {
+      userRole: req.user?.role,
+      requiredRoles: roles,
+      hasAccess: req.user && roles.includes(req.user.role)
+    });
+    
     if (!req.user || !roles.includes(req.user.role)) {
       return res.status(403).json({ message: "Access denied" });
     }
