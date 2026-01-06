@@ -42,7 +42,7 @@ const authLimiter = rateLimit({
 });
 
 app.use('/api/auth', authLimiter);
-app.use(limiter);
+app.use('/api', limiter);
 
 app.use((req, res, next) => {
   const allowedOrigins = process.env.NODE_ENV === 'production' 
