@@ -17,6 +17,9 @@ for (const envVar of requiredEnvVars) {
 const app = express();
 const httpServer = createServer(app);
 
+// Trust proxy for Render deployment
+app.set('trust proxy', 1);
+
 // Rate limiting - more lenient for production
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
