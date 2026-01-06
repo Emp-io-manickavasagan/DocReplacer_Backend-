@@ -7,7 +7,7 @@ import { connectDB } from "./db";
 import rateLimit from "express-rate-limit";
 
 // Validate required environment variables
-const requiredEnvVars = ['DATABASE_URL', 'JWT_SECRET', 'EMAIL_USER', 'EMAIL_PASS'];
+const requiredEnvVars = ['DATABASE_URL', 'JWT_SECRET', 'RESEND_API_KEY'];
 for (const envVar of requiredEnvVars) {
   if (!process.env[envVar]) {
     throw new Error(`Required environment variable ${envVar} is not set`);
