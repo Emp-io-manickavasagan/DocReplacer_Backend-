@@ -43,7 +43,13 @@ app.use(limiter);
 
 app.use((req, res, next) => {
   const allowedOrigins = process.env.NODE_ENV === 'production' 
-    ? ['https://docreplacer.vercel.app', 'https://docreplacer-frontend.onrender.com', 'https://docreplacer.netlify.app']
+    ? [
+        'https://docreplacer.vercel.app', 
+        'https://docreplacer-frontend.onrender.com', 
+        'https://docreplacer.netlify.app',
+        'https://www.docreplacer.online',
+        'https://docreplacer.online'
+      ]
     : ['http://localhost:3000', 'http://localhost:5173', 'http://localhost:4173'];
   
   const origin = req.headers.origin;
