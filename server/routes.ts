@@ -571,7 +571,7 @@ export async function registerRoutes(
         await storage.updatePaymentStatus(purchase_id, 'completed', { startDate, endDate });
         await storage.updateUserPlan(user._id, 'PRO');
         
-        const redirectUrl = `${process.env.FRONTEND_URL || 'https://www.docreplacer.online'}/payment-success?payment=${paymentRecord._id}`;
+        const redirectUrl = `${process.env.FRONTEND_URL || 'https://www.docreplacer.online'}/payment-success?purchase_id=${purchase_id}`;
         
         res.json({ 
           success: true,
