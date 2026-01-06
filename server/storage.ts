@@ -73,17 +73,13 @@ export class DatabaseStorage implements IStorage {
 
   async updateUserPlan(userId: string, plan: string): Promise<void> {
     const now = new Date();
-    const expiresAt = plan === 'PRO' ? new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000) : null; // 30 days
-    
-    console.log(`🔄 Updating user ${userId} plan to ${plan}, expires:`, expiresAt);
+    const expiresAt = plan === 'PRO' ? new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000) : null;
     
     await User.findByIdAndUpdate(userId, { 
       plan,
       planActivatedAt: now,
       planExpiresAt: expiresAt
     });
-    
-    console.log(`✅ User ${userId} plan updated successfully`);
   }
 
   async updatePlanActivationDate(userId: string, date: Date): Promise<void> {

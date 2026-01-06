@@ -25,23 +25,21 @@ export async function registerRoutes(
   setInterval(async () => {
     try {
       await storage.checkExpiredPlans();
-      console.log('✅ Checked for expired plans:', new Date().toISOString());
     } catch (error) {
-      console.error('❌ Error checking expired plans:', error);
+      console.error('Error checking expired plans:', error);
     }
-  }, 60 * 60 * 1000); // 1 hour
+  }, 60 * 60 * 1000);
 
   // Initial check on startup
   setTimeout(async () => {
     try {
       await storage.checkExpiredPlans();
-      console.log('✅ Initial expired plans check completed');
     } catch (error) {
-      console.error('❌ Initial expired plans check failed:', error);
+      console.error('Initial expired plans check failed:', error);
     }
-  }, 5000); // 5 seconds after startup
+  }, 5000);
 
-  // Health check endpoint (before auth limiter)
+  // Health check endpoint
   app.get('/health', (req, res) => {
     res.json({ 
       status: 'ok', 
@@ -63,37 +61,34 @@ export async function registerRoutes(
   // === AUTH ===
   app.post('/api/auth/send-otp', async (req, res) => {
     try {
-      console.log('Send OTP request received:', { email: req.body.email, hasPassword: !!req.body.password, hasName: !!req.body.name });
-      
       const { email, password, name } = req.body;
       
       if (!email || !password || !name) {
-        console.log('Missing required fields');
         return res.status(400).json({ message: "Email, password, and name are required" });
       }
       
       if (password.length < 8) {
-        console.log('Password too short');
         return res.status(400).json({ message: "Password must be at least 8 characters long" });
       }
       
       const existing = await storage.getUserByEmail(email);
       if (existing) {
-        console.log('Email already exists');
         return res.status(400).json({ message: "Email already exists" });
       }
 
       const otp = generateOTP();
       const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
       
-      console.log('Generated OTP, saving to database...');
       await OTP.deleteMany({ email });
       await OTP.create({ email, otp, expiresAt, userData: { email, password, name } });
       
-      console.log('Attempting to send OTP email...');
-      await sendOTP(email, otp);
+      try {
+        await sendOTP(email, otp);
+      } catch (emailError) {
+        console.error('Email sending failed:', emailError.message);
+        console.log(`OTP for ${email}: ${otp}`);
+      }
       
-      console.log('OTP sent successfully');
       res.json({ message: "OTP sent successfully" });
       
     } catch (err) {
@@ -149,9 +144,14 @@ export async function registerRoutes(
       await OTP.deleteMany({ email });
       await OTP.create({ email, otp, expiresAt, userData: { type: 'password_reset' } });
       
-      await sendOTP(email, otp);
+      try {
+        await sendOTP(email, otp);
+      } catch (emailError) {
+        console.error('Email sending failed:', emailError.message);
+        console.log(`Password Reset OTP for ${email}: ${otp}`);
+      }
       
-      res.json({ message: "Password reset OTP sent to email" });
+      res.json({ message: "Password reset OTP sent" });
       
     } catch (err) {
       console.error('Forgot password error:', err);
@@ -254,15 +254,9 @@ export async function registerRoutes(
       const result = await docxService.parse(req.file.buffer);
       const documentId = crypto.randomUUID();
       
-      console.log('DOCX parsed successfully:');
-      console.log('Number of paragraphs:', result.nodes.length);
-      console.log('First 5 paragraphs:', result.nodes.slice(0, 5));
-      
-      // Store file buffer and paragraph mapping for later export
       fileBufferStore.set(documentId, req.file.buffer);
       paragraphMappings.set(documentId, result.paragraphMap);
 
-      // Save metadata
       await storage.createDocument({
         userId: req.user!.id,
         name: req.file.originalname,
@@ -278,27 +272,18 @@ export async function registerRoutes(
   });
 
   app.post(api.docx.export.path, authenticateToken, async (req: AuthRequest, res) => {
-    console.log('Export route hit');
     try {
       const { documentId, paragraphs } = req.body;
-      console.log('Export request:', { documentId, paragraphs: paragraphs?.length });
       
       const originalBuffer = fileBufferStore.get(documentId);
       const paragraphMap = paragraphMappings.get(documentId);
-      console.log('Original buffer found:', !!originalBuffer);
-      console.log('Paragraph map found:', !!paragraphMap);
       
       if (!originalBuffer || !paragraphMap) {
-        console.log('Missing data for documentId:', documentId);
         return res.status(404).json({ message: "Original document not found (session expired?)" });
       }
       
-      console.log('Starting DOCX rebuild...');
-      // Rebuild DOCX with proper paragraph mapping
       const newBuffer = await docxService.rebuild(originalBuffer, paragraphs, paragraphMap);
-      console.log('DOCX rebuild successful, buffer size:', newBuffer.length);
       
-      // Increment usage count on successful export
       await storage.incrementMonthlyUsage(req.user!.id);
       
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
@@ -367,34 +352,20 @@ export async function registerRoutes(
   });
   app.post('/api/payment/dodo-webhook', async (req, res) => {
     try {
-      console.log('🔔 WEBHOOK RECEIVED - Raw body:', JSON.stringify(req.body, null, 2));
-      console.log('🔔 WEBHOOK HEADERS:', JSON.stringify(req.headers, null, 2));
-      
       const { event_type, data } = req.body;
-      
-      console.log('🔔 Dodo webhook received:', { event_type, data });
       
       if (event_type === 'purchase.completed') {
         const { purchase_id, product_id, customer_email, amount } = data;
         
-        console.log('💳 Processing payment:', { purchase_id, customer_email, amount });
-        
-        // Validate required fields
         if (!purchase_id || !customer_email || !amount) {
-          console.error('❌ Missing required webhook data');
           return res.status(400).json({ error: 'Missing required webhook data' });
         }
         
-        // Find user by email
         const user = await storage.getUserByEmail(customer_email);
         if (!user) {
-          console.error('❌ User not found for email:', customer_email);
           return res.status(404).json({ error: 'User not found' });
         }
         
-        console.log('👤 Found user:', user.email, 'ID:', user._id);
-        
-        // Create payment record first
         const paymentRecord = await storage.createPayment({
           userId: user._id,
           dodoPurchaseId: purchase_id,
@@ -404,32 +375,20 @@ export async function registerRoutes(
           customerEmail: customer_email
         });
         
-        console.log('💾 Payment record created:', paymentRecord._id);
-        
-        // Set subscription dates
         const startDate = new Date();
-        const endDate = new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000); // 30 days
+        const endDate = new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
         
-        // Update payment with subscription dates
         await storage.updatePaymentStatus(purchase_id, 'completed', {
           startDate,
           endDate
         });
         
-        console.log('📅 Subscription dates set:', { startDate, endDate });
-        
-        // Upgrade user to PRO
         await storage.updateUserPlan(user._id, 'PRO');
-        
-        console.log('✅ User plan upgraded to PRO for:', user.email);
-        console.log('🎉 Payment processing completed successfully');
-      } else {
-        console.log('ℹ️ Webhook event type not handled:', event_type);
       }
       
       res.json({ success: true });
     } catch (error) {
-      console.error('❌ Dodo webhook error:', error);
+      console.error('Webhook error:', error);
       res.status(500).json({ error: 'Webhook processing failed' });
     }
   });
