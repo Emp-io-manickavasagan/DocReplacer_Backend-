@@ -5,20 +5,24 @@ if (!process.env.EMAIL_USER || !process.env.EMAIL_PASS) {
 }
 
 const transporter = nodemailer.createTransport({
-  service: 'gmail',
+  host: 'smtp.gmail.com',
+  port: 587,
+  secure: false,
   auth: {
     user: process.env.EMAIL_USER,
     pass: process.env.EMAIL_PASS,
   },
-  debug: false,
-  logger: false
+  tls: {
+    rejectUnauthorized: false
+  },
+  connectionTimeout: 60000,
+  greetingTimeout: 30000,
+  socketTimeout: 60000
 });
 
-export const sendOTP = async (email: string, otp: string, retries = 3) => {
+export const sendOTP = async (email: string, otp: string, retries = 2) => {
   for (let attempt = 1; attempt <= retries; attempt++) {
     try {
-      await transporter.verify();
-      
       const mailOptions = {
         from: `"DocReplacer" <${process.env.EMAIL_USER}>`,
         to: email,
@@ -43,7 +47,7 @@ export const sendOTP = async (email: string, otp: string, retries = 3) => {
       if (attempt === retries) {
         throw new Error(`Failed to send OTP email after ${retries} attempts: ${error.message}`);
       }
-      await new Promise(resolve => setTimeout(resolve, 1000 * attempt));
+      await new Promise(resolve => setTimeout(resolve, 2000 * attempt));
     }
   }
 };
