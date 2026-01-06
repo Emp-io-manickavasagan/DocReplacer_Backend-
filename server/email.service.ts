@@ -1,12 +1,16 @@
 import { Resend } from 'resend';
 
-if (!process.env.RESEND_API_KEY) {
-  throw new Error('RESEND_API_KEY environment variable is required');
-}
-
-const resend = new Resend(process.env.RESEND_API_KEY);
+const resend = process.env.RESEND_API_KEY && process.env.RESEND_API_KEY !== 'your_resend_api_key_here' 
+  ? new Resend(process.env.RESEND_API_KEY) 
+  : null;
 
 export const sendOTP = async (email: string, otp: string) => {
+  // If Resend is not configured, just log the OTP
+  if (!resend) {
+    console.log(`📧 RESEND NOT CONFIGURED - OTP for ${email}: ${otp}`);
+    return { id: 'console-fallback' };
+  }
+
   try {
     const { data, error } = await resend.emails.send({
       from: 'DocReplacer <noreply@docreplacer.online>',
@@ -26,6 +30,8 @@ export const sendOTP = async (email: string, otp: string) => {
     });
 
     if (error) {
+      console.error('Resend error:', error);
+      console.log(`📧 EMAIL FAILED - OTP for ${email}: ${otp}`);
       throw new Error(`Resend error: ${error.message}`);
     }
 
@@ -33,6 +39,7 @@ export const sendOTP = async (email: string, otp: string) => {
     return data;
   } catch (error) {
     console.error('Email sending failed:', error.message);
+    console.log(`📧 EMAIL ERROR - OTP for ${email}: ${otp}`);
     throw new Error(`Failed to send OTP email: ${error.message}`);
   }
 };

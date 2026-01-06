@@ -7,11 +7,16 @@ import { connectDB } from "./db";
 import rateLimit from "express-rate-limit";
 
 // Validate required environment variables
-const requiredEnvVars = ['DATABASE_URL', 'JWT_SECRET', 'RESEND_API_KEY'];
+const requiredEnvVars = ['DATABASE_URL', 'JWT_SECRET'];
 for (const envVar of requiredEnvVars) {
   if (!process.env[envVar]) {
     throw new Error(`Required environment variable ${envVar} is not set`);
   }
+}
+
+// Warn about missing Resend API key
+if (!process.env.RESEND_API_KEY || process.env.RESEND_API_KEY === 'your_resend_api_key_here') {
+  console.warn('⚠️  RESEND_API_KEY not configured - OTPs will be logged to console only');
 }
 
 const app = express();
