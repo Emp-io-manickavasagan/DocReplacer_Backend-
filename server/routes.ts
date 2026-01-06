@@ -716,14 +716,6 @@ export async function registerRoutes(
       res.status(500).json({ error: 'Webhook processing failed' });
     }
   });
-  
-  app.get(api.payment.history.path, authenticateToken, async (req: AuthRequest, res) => {
-    // Simple payment history - only show user's own payments
-    const payments = await storage.getPayments();
-    const userPayments = payments.filter(p => p.userId === req.user!.id);
-    res.json(userPayments);
-  });
-
   // Get user documents
   app.get('/api/user/documents', authenticateToken, async (req: AuthRequest, res) => {
     try {

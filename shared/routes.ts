@@ -109,15 +109,6 @@ export const api = {
         200: z.object({ success: z.boolean() }),
         400: errorSchemas.validation,
       },
-    },
-    history: {
-      method: 'GET' as const,
-      path: '/api/payment/history',
-      responses: {
-        200: z.array(z.any()),
-        401: errorSchemas.unauthorized,
-      },
-    }
   },
   admin: {
     users: {
