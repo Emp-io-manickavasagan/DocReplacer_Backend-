@@ -329,7 +329,7 @@ export async function registerRoutes(
       
       if (status === 'success') {
         // Create payment record
-        await storage.createPayment({
+        const paymentRecord = await storage.createPayment({
           userId: req.user!.id,
           dodoPurchaseId: paymentId,
           productId: 'pro_plan',
@@ -338,10 +338,39 @@ export async function registerRoutes(
           customerEmail: req.user!.email
         });
         
+        // Set subscription dates
+        const startDate = new Date();
+        const endDate = new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
+        
+        await storage.updatePaymentStatus(paymentId, 'completed', {
+          startDate,
+          endDate
+        });
+        
         // Upgrade user to PRO
         await storage.updateUserPlan(req.user!.id, 'PRO');
         
-        res.json({ success: true, message: 'Payment verified and plan upgraded' });
+        // Get updated user data
+        const updatedUser = await storage.getUser(req.user!.id);
+        
+        res.json({ 
+          success: true, 
+          message: 'Payment verified and plan upgraded',
+          payment: {
+            id: paymentRecord._id,
+            amount: paymentRecord.amount,
+            currency: 'INR',
+            status: 'completed',
+            purchaseId: paymentId,
+            planActivatedAt: startDate,
+            planExpiresAt: endDate
+          },
+          user: {
+            plan: updatedUser?.plan,
+            planExpiresAt: updatedUser?.planExpiresAt
+          },
+          redirectUrl: `${process.env.FRONTEND_URL || 'https://www.docreplacer.online'}/payment-success?payment=${paymentRecord._id}`
+        });
       } else {
         res.status(400).json({ error: 'Payment verification failed' });
       }
@@ -384,16 +413,60 @@ export async function registerRoutes(
         });
         
         await storage.updateUserPlan(user._id, 'PRO');
+        
+        // Send success redirect URL back to payment provider
+        const redirectUrl = `${process.env.FRONTEND_URL || 'https://www.docreplacer.online'}/payment-success?payment=${paymentRecord._id}`;
+        
+        res.json({ 
+          success: true,
+          redirect_url: redirectUrl
+        });
+      } else {
+        res.json({ success: true });
       }
-      
-      res.json({ success: true });
     } catch (error) {
       console.error('Webhook error:', error);
       res.status(500).json({ error: 'Webhook processing failed' });
     }
   });
 
-  // Manual payment verification endpoint
+  // Get payment details for success page
+  app.get('/api/payment/:paymentId', authenticateToken, async (req: AuthRequest, res) => {
+    try {
+      const { paymentId } = req.params;
+      const payment = await Payment.findOne({ 
+        _id: paymentId, 
+        userId: req.user!.id 
+      });
+      
+      if (!payment) {
+        return res.status(404).json({ error: 'Payment not found' });
+      }
+      
+      const user = await storage.getUser(req.user!.id);
+      
+      res.json({
+        payment: {
+          id: payment._id,
+          amount: payment.amount,
+          currency: payment.currency || 'INR',
+          status: payment.status,
+          purchaseId: payment.dodoPurchaseId,
+          createdAt: payment.createdAt,
+          subscriptionStartDate: payment.subscriptionStartDate,
+          subscriptionEndDate: payment.subscriptionEndDate
+        },
+        user: {
+          plan: user?.plan,
+          planExpiresAt: user?.planExpiresAt,
+          planActivatedAt: user?.planActivatedAt
+        }
+      });
+    } catch (error) {
+      console.error('Get payment error:', error);
+      res.status(500).json({ error: 'Failed to fetch payment details' });
+    }
+  });
   app.post('/api/payment/verify-manual', authenticateToken, async (req: AuthRequest, res) => {
     try {
       const { purchase_id } = req.body;
