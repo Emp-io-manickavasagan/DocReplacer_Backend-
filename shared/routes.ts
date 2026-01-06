@@ -109,6 +109,7 @@ export const api = {
         200: z.object({ success: z.boolean() }),
         400: errorSchemas.validation,
       },
+    },
   },
   admin: {
     users: {
