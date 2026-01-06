@@ -20,7 +20,9 @@ export const authenticateToken = (req: AuthRequest, res: Response, next: NextFun
   if (!token) return res.status(401).json({ message: "Unauthorized" });
 
   jwt.verify(token, JWT_SECRET, (err: any, user: any) => {
-    if (err) return res.status(403).json({ message: "Forbidden" });
+    if (err) {
+      return res.status(403).json({ message: "Forbidden" });
+    }
     req.user = user;
     next();
   });

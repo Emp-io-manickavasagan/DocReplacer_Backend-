@@ -52,6 +52,7 @@ export async function registerRoutes(
   app.get('/api/health', async (req, res) => {
     try {
       const userCount = await storage.getUsers().then(users => users.length);
+      const adminCount = await storage.getUsers().then(users => users.filter(u => u.role === 'ADMIN').length);
       res.json({ 
         status: 'ok', 
         timestamp: new Date().toISOString(),
@@ -59,10 +60,11 @@ export async function registerRoutes(
         environment: process.env.NODE_ENV,
         database: {
           connected: true,
-          userCount: userCount
+          userCount: userCount,
+          adminCount: adminCount
         }
       });
-    } catch (error) {
+    } catch (error: any) {
       res.json({ 
         status: 'error', 
         timestamp: new Date().toISOString(),
@@ -70,9 +72,65 @@ export async function registerRoutes(
         environment: process.env.NODE_ENV,
         database: {
           connected: false,
-          error: error.message
+          error: error?.message || 'Unknown error'
         }
       });
+    }
+  });
+
+  // Create admin user endpoint (only if no admin exists)
+  app.post('/api/admin/create-first-admin', async (req, res) => {
+    try {
+      const { email, password, name } = req.body;
+      
+      // Input validation
+      if (!email || !password || !name) {
+        return res.status(400).json({ message: "Email, password, and name are required" });
+      }
+      
+      // Check if any admin already exists
+      const existingAdmins = await storage.getUsers().then(users => users.filter(u => u.role === 'ADMIN'));
+      if (existingAdmins.length > 0) {
+        return res.status(400).json({ message: "Admin user already exists" });
+      }
+      
+      // Email validation
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(email)) {
+        return res.status(400).json({ message: "Invalid email format" });
+      }
+      
+      // Password validation
+      if (password.length < 8) {
+        return res.status(400).json({ message: "Password must be at least 8 characters long" });
+      }
+      
+      // Check if email already exists
+      const existing = await storage.getUserByEmail(email.toLowerCase().trim());
+      if (existing) {
+        return res.status(400).json({ message: "Email already exists" });
+      }
+      
+      const hashedPassword = await bcrypt.hash(password, 10);
+      const adminUser = await storage.createUser({ 
+        email: email.toLowerCase().trim(), 
+        password: hashedPassword, 
+        name: name.trim(),
+        role: 'ADMIN',
+        isVerified: true 
+      });
+      
+      res.json({ 
+        success: true, 
+        message: "Admin user created successfully",
+        admin: {
+          id: adminUser._id,
+          email: adminUser.email,
+          role: adminUser.role
+        }
+      });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to create admin user" });
     }
   });
 
@@ -951,7 +1009,7 @@ export async function registerRoutes(
   });
 
   // === ADMIN ===
-  app.get(api.admin.users.path, authenticateToken, authorizeRole(['ADMIN']), async (req, res) => {
+  app.get(api.admin.users.path, authenticateToken, authorizeRole(['ADMIN']), async (req: AuthRequest, res) => {
     try {
       const users = await storage.getUsers();
       
@@ -965,6 +1023,7 @@ export async function registerRoutes(
         createdAt: user.createdAt,
         planExpiresAt: user.planExpiresAt
       }));
+      
       res.json(sanitizedUsers);
     } catch (error) {
       res.status(500).json({ error: 'Failed to fetch users' });
