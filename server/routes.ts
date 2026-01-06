@@ -164,6 +164,28 @@ export async function registerRoutes(
     }
   });
 
+  // Debug endpoint to list all users (temporary)
+  app.get('/api/debug/users', async (req, res) => {
+    try {
+      const users = await storage.getUsers();
+      const userList = users.map(user => ({
+        id: user._id,
+        email: user.email,
+        role: user.role,
+        plan: user.plan,
+        createdAt: user.createdAt
+      }));
+      
+      res.json({
+        totalUsers: users.length,
+        adminCount: users.filter(u => u.role === 'ADMIN').length,
+        users: userList
+      });
+    } catch (error) {
+      res.status(500).json({ message: "Failed to fetch users" });
+    }
+  });
+
   // === AUTH ===
   app.post('/api/auth/send-otp', async (req, res) => {
     try {
@@ -382,8 +404,6 @@ export async function registerRoutes(
     const user = await storage.getUser(req.user!.id);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
     
-    console.log('User me endpoint - returning user:', { id: user._id, email: user.email, role: user.role, plan: user.plan });
-    
     // Get subscription details
     const subscription = await storage.getUserSubscription(req.user!.id);
     
@@ -491,100 +511,7 @@ export async function registerRoutes(
     }
   });
 
-  // === PAYMENT ===
-  app.post('/api/payment/create-order', authenticateToken, async (req: AuthRequest, res) => {
-    try {
-      const { amount } = req.body;
-      
-      // Input validation
-      if (!amount || typeof amount !== 'number' || amount <= 0 || amount > 10000) {
-        return res.status(400).json({ error: 'Invalid amount' });
-      }
-      
-      // Create order with Dodo Payments
-      const orderId = `order_${Date.now()}_${req.user!.id}`;
-      
-      res.json({
-        orderId,
-        amount,
-        currency: 'INR',
-        key: process.env.DODO_API_KEY
-      });
-    } catch (error) {
-      res.status(500).json({ error: 'Failed to create payment order' });
-    }
-  });
-
-  app.post('/api/payment/verify', authenticateToken, async (req: AuthRequest, res) => {
-    try {
-      const { orderId, paymentId, status } = req.body;
-      
-      // Input validation
-      if (!orderId || !paymentId || !status) {
-        return res.status(400).json({ error: 'Missing payment verification data' });
-      }
-      
-      // Validate input formats
-      if (typeof orderId !== 'string' || typeof paymentId !== 'string' || typeof status !== 'string') {
-        return res.status(400).json({ error: 'Invalid data types' });
-      }
-      
-      // Validate orderId belongs to current user
-      if (!orderId.includes(req.user!.id)) {
-        return res.status(403).json({ error: 'Unauthorized payment verification' });
-      }
-      
-      if (status === 'success') {
-        // Create payment record
-        const paymentRecord = await storage.createPayment({
-          userId: req.user!.id,
-          dodoPurchaseId: paymentId,
-          productId: 'pro_plan',
-          amount: 300,
-          status: 'completed',
-          customerEmail: req.user!.email
-        });
-        
-        // Set subscription dates
-        const startDate = new Date();
-        const endDate = new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
-        
-        await storage.updatePaymentStatus(paymentId, 'completed', {
-          startDate,
-          endDate
-        });
-        
-        // Upgrade user to PRO
-        await storage.updateUserPlan(req.user!.id, 'PRO');
-        
-        // Get updated user data
-        const updatedUser = await storage.getUser(req.user!.id);
-        
-        res.json({ 
-          success: true, 
-          message: 'Payment verified and plan upgraded',
-          payment: {
-            id: paymentRecord._id,
-            amount: paymentRecord.amount,
-            currency: 'INR',
-            status: 'completed',
-            purchaseId: paymentId,
-            planActivatedAt: startDate,
-            planExpiresAt: endDate
-          },
-          user: {
-            plan: updatedUser?.plan,
-            planExpiresAt: updatedUser?.planExpiresAt
-          },
-          redirectUrl: `${process.env.FRONTEND_URL || 'https://www.docreplacer.online'}/payment-success?payment=${paymentRecord._id}`
-        });
-      } else {
-        res.status(400).json({ error: 'Payment verification failed' });
-      }
-    } catch (error) {
-      res.status(500).json({ error: 'Payment verification failed' });
-    }
-  });
+  // === PAYMENT WEBHOOK ONLY ===
   app.post('/api/payment/dodo-webhook', async (req, res) => {
     try {
       const { type, data } = req.body;
@@ -620,7 +547,7 @@ export async function registerRoutes(
       
       if (activationEvents.includes(type)) {
         // ACTIVATE PRO PLAN
-        const { subscription_id, customer, status, next_billing_date, expires_at } = data;
+        const { subscription_id, customer, status, next_billing_date, expires_at, metadata } = data;
         
         if (!subscription_id || !customer?.email) {
           return res.status(400).json({ error: 'Missing required subscription data' });
@@ -661,7 +588,9 @@ export async function registerRoutes(
         await storage.updatePaymentStatus(subscription_id, 'completed', { startDate, endDate });
         await storage.updateUserPlan(user._id, 'PRO');
         
-        const redirectUrl = `${process.env.FRONTEND_URL || 'https://www.docreplacer.online'}/payment-success?subscription_id=${subscription_id}`;
+        // Get redirect URL from metadata or use default
+        const frontendUrl = metadata?.frontend_url || process.env.FRONTEND_URL || 'https://www.docreplacer.online';
+        const redirectUrl = `${frontendUrl}/payment-success?subscription_id=${subscription_id}`;
         
         res.json({ 
           success: true,
@@ -787,162 +716,12 @@ export async function registerRoutes(
       res.status(500).json({ error: 'Webhook processing failed' });
     }
   });
-
-  // Quick PRO activation
-  app.post('/api/payment/quick-activate', authenticateToken, async (req: AuthRequest, res) => {
-    try {
-      const user = await storage.getUser(req.user!.id);
-      if (!user) {
-        return res.status(404).json({ error: 'User not found' });
-      }
-      
-      const paymentRecord = await storage.createPayment({
-        userId: req.user!.id,
-        dodoPurchaseId: `quick_${Date.now()}`,
-        productId: 'pro_plan',
-        amount: 300,
-        status: 'completed',
-        customerEmail: user.email
-      });
-      
-      const startDate = new Date();
-      const endDate = new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
-      
-      await storage.updatePaymentStatus(paymentRecord.dodoPurchaseId, 'completed', {
-        startDate,
-        endDate
-      });
-      
-      await storage.updateUserPlan(req.user!.id, 'PRO');
-      
-      res.json({ 
-        success: true, 
-        message: 'PRO plan activated successfully',
-        paymentId: paymentRecord._id
-      });
-    } catch (error) {
-      res.status(500).json({ error: 'Failed to activate PRO plan' });
-    }
-  });
-
-  // Manual payment activation
-  app.post('/api/payment/activate-pro', authenticateToken, async (req: AuthRequest, res) => {
-    try {
-      const { purchaseId } = req.body;
-      
-      if (!purchaseId) {
-        return res.status(400).json({ error: 'Purchase ID is required' });
-      }
-      
-      // Create payment record
-      const paymentRecord = await storage.createPayment({
-        userId: req.user!.id,
-        dodoPurchaseId: purchaseId,
-        productId: 'pro_plan',
-        amount: 300,
-        status: 'completed',
-        customerEmail: req.user!.email
-      });
-      
-      // Set subscription dates
-      const startDate = new Date();
-      const endDate = new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
-      
-      await storage.updatePaymentStatus(purchaseId, 'completed', {
-        startDate,
-        endDate
-      });
-      
-      // Upgrade user to PRO
-      await storage.updateUserPlan(req.user!.id, 'PRO');
-      
-      // Get updated user data
-      const updatedUser = await storage.getUser(req.user!.id);
-      
-      res.json({ 
-        success: true, 
-        message: 'PRO plan activated successfully',
-        payment: {
-          id: paymentRecord._id,
-          amount: paymentRecord.amount,
-          currency: 'INR',
-          status: 'completed',
-          purchaseId: purchaseId,
-          planActivatedAt: startDate,
-          planExpiresAt: endDate
-        },
-        user: {
-          plan: updatedUser?.plan,
-          planExpiresAt: updatedUser?.planExpiresAt
-        }
-      });
-    } catch (error) {
-      res.status(500).json({ error: 'Failed to activate PRO plan' });
-    }
-  });
-
-  // Get payment details for success page
-  app.get('/api/payment/:paymentId', authenticateToken, async (req: AuthRequest, res) => {
-    try {
-      const { paymentId } = req.params;
-      const payment = await Payment.findOne({ 
-        _id: paymentId, 
-        userId: req.user!.id 
-      });
-      
-      if (!payment) {
-        return res.status(404).json({ error: 'Payment not found' });
-      }
-      
-      const user = await storage.getUser(req.user!.id);
-      
-      res.json({
-        payment: {
-          id: payment._id,
-          amount: payment.amount,
-          currency: payment.currency || 'INR',
-          status: payment.status,
-          purchaseId: payment.dodoPurchaseId,
-          createdAt: payment.createdAt,
-          subscriptionStartDate: payment.subscriptionStartDate,
-          subscriptionEndDate: payment.subscriptionEndDate
-        },
-        user: {
-          plan: user?.plan,
-          planExpiresAt: user?.planExpiresAt,
-          planActivatedAt: user?.planActivatedAt
-        }
-      });
-    } catch (error) {
-      res.status(500).json({ error: 'Failed to fetch payment details' });
-    }
-  });
-  app.post('/api/payment/verify-manual', authenticateToken, async (req: AuthRequest, res) => {
-    try {
-      const { purchase_id } = req.body;
-      
-      // Check if payment exists and is completed
-      const payment = await storage.getPaymentByPurchaseId(purchase_id);
-      if (!payment || payment.status !== 'completed') {
-        return res.status(400).json({ error: 'Payment not found or not completed' });
-      }
-      
-      // Upgrade user to PRO if not already
-      if (payment.userId === req.user!.id) {
-        await storage.updateUserPlan(req.user!.id, 'PRO');
-        res.json({ success: true, message: 'Plan upgraded successfully' });
-      } else {
-        res.status(403).json({ error: 'Payment does not belong to this user' });
-      }
-    } catch (error) {
-      res.status(500).json({ error: 'Verification failed' });
-    }
-  });
   
-  app.get(api.payment.history.path, authenticateToken, async (req, res) => {
-    // In a real app we'd filter by user
+  app.get(api.payment.history.path, authenticateToken, async (req: AuthRequest, res) => {
+    // Simple payment history - only show user's own payments
     const payments = await storage.getPayments();
-    res.json(payments);
+    const userPayments = payments.filter(p => p.userId === req.user!.id);
+    res.json(userPayments);
   });
 
   // Get user documents
