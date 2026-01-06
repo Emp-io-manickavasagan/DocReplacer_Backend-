@@ -425,31 +425,47 @@ export async function registerRoutes(
 
   // === DOCX ===
   app.post(api.docx.upload.path, authenticateToken, checkPlanLimit, upload.single('file'), async (req: AuthRequest, res) => {
-    if (!req.file) return res.status(400).json({ message: "No file uploaded" });
+    console.log('Upload endpoint hit:', { 
+      userId: req.user?.id, 
+      fileName: req.file?.originalname,
+      fileSize: req.file?.size 
+    });
+    
+    if (!req.file) {
+      console.log('No file uploaded');
+      return res.status(400).json({ message: "No file uploaded" });
+    }
     
     // Validate file type
     if (!req.file.originalname.endsWith('.docx')) {
+      console.log('Invalid file type:', req.file.originalname);
       return res.status(400).json({ message: "Only .docx files are allowed" });
     }
     
     // Validate file size (10MB limit)
     if (req.file.size > 10 * 1024 * 1024) {
+      console.log('File too large:', req.file.size);
       return res.status(400).json({ message: "File size must be less than 10MB" });
     }
     
     // Validate filename
     const filename = req.file.originalname;
     if (filename.length > 255 || !/^[a-zA-Z0-9._-]+\.docx$/.test(filename)) {
+      console.log('Invalid filename:', filename);
       return res.status(400).json({ message: "Invalid filename" });
     }
 
     try {
+      console.log('Parsing DOCX file...');
       const result = await docxService.parse(req.file.buffer);
+      console.log('DOCX parsed successfully, paragraphs found:', result.nodes.length);
+      
       const documentId = crypto.randomUUID();
       
       fileBufferStore.set(documentId, req.file.buffer);
       paragraphMappings.set(documentId, result.paragraphMap);
 
+      console.log('Creating document record...');
       await storage.createDocument({
         userId: req.user!.id,
         name: filename,
@@ -457,8 +473,10 @@ export async function registerRoutes(
         originalContent: JSON.stringify(result.nodes)
       });
 
+      console.log('Sending response:', { documentId, paragraphCount: result.nodes.length });
       res.json({ documentId, paragraphs: result.nodes });
     } catch (err) {
+      console.error('DOCX parsing error:', err);
       res.status(500).json({ message: "Failed to parse DOCX" });
     }
   });

@@ -38,22 +38,42 @@ export const authorizeRole = (roles: string[]) => {
 };
 
 export const checkPlanLimit = async (req: AuthRequest, res: Response, next: NextFunction) => {
-  if (!req.user) return res.status(401).json({ message: "Unauthorized" });
+  console.log('Checking plan limit for user:', req.user?.id);
+  
+  if (!req.user) {
+    console.log('No user in request');
+    return res.status(401).json({ message: "Unauthorized" });
+  }
 
   const user = await storage.getUser(req.user.id);
-  if (!user) return res.status(404).json({ message: "User not found" });
+  if (!user) {
+    console.log('User not found in database:', req.user.id);
+    return res.status(404).json({ message: "User not found" });
+  }
+
+  console.log('User found:', { 
+    id: user._id, 
+    plan: user.plan, 
+    monthlyUsage: user.monthlyUsage,
+    planActivatedAt: user.planActivatedAt,
+    createdAt: user.createdAt
+  });
 
   const now = new Date();
   const planActivatedAt = user.planActivatedAt || user.createdAt;
   const daysSincePlanActivation = Math.floor((now.getTime() - planActivatedAt.getTime()) / (1000 * 60 * 60 * 24));
   
+  console.log('Days since plan activation:', daysSincePlanActivation);
+  
   // Check if 30 days have passed since plan activation
   if (daysSincePlanActivation >= 30) {
+    console.log('Plan expired, resetting usage...');
     // Reset usage and update plan activation date
     await storage.resetMonthlyUsage(user._id);
     
     // If PRO plan, downgrade to FREE after 30 days (subscription expired)
     if (user.plan === 'PRO') {
+      console.log('Downgrading PRO user to FREE');
       await storage.updateUserPlan(user._id, 'FREE');
       await storage.updatePlanActivationDate(user._id, now);
     } else {
@@ -75,11 +95,20 @@ export const checkPlanLimit = async (req: AuthRequest, res: Response, next: Next
   };
   
   const limit = limits[user.plan as keyof typeof limits] || 0;
+  
+  console.log('Plan limit check:', { 
+    plan: user.plan, 
+    usage: user.monthlyUsage, 
+    limit: limit,
+    exceeded: user.monthlyUsage >= limit
+  });
 
   if (user.monthlyUsage >= limit) {
+    console.log('Monthly plan limit exceeded');
     return res.status(403).json({ message: "Monthly plan limit exceeded. Please upgrade to PRO." });
   }
 
+  console.log('Plan limit check passed, proceeding...');
   next();
 };
 
