@@ -60,6 +60,7 @@ export const api = {
           paragraphs: z.array(z.object({
             id: z.string(),
             text: z.string(),
+            isEmpty: z.boolean().optional(),
           })) 
         }),
         400: errorSchemas.validation,
