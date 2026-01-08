@@ -223,7 +223,7 @@ export async function registerRoutes(
       await OTP.deleteOne({ _id: otpRecord._id });
       
       const token = generateToken({ id: user._id, email: user.email, role: user.role, plan: user.plan });
-      res.status(201).json({ token, user: { id: user._id, email: user.email, role: user.role, plan: user.plan } });
+      res.status(201).json({ token, user: { id: user._id, email: user.email, name: user.name, role: user.role, plan: user.plan } });
     } catch (err) {
       res.status(500).json({ message: "Verification failed" });
     }
@@ -322,7 +322,7 @@ export async function registerRoutes(
       const user = await storage.createUser({ ...input, password: hashedPassword });
       const token = generateToken({ id: user._id, email: user.email, role: user.role, plan: user.plan });
       
-      res.status(201).json({ token, user: { id: user._id, email: user.email, role: user.role, plan: user.plan } });
+      res.status(201).json({ token, user: { id: user._id, email: user.email, name: user.name, role: user.role, plan: user.plan } });
     } catch (err) {
        if (err instanceof z.ZodError) {
           return res.status(400).json({ message: err.errors[0].message });
@@ -341,7 +341,7 @@ export async function registerRoutes(
       }
 
       const token = generateToken({ id: user._id, email: user.email, role: user.role, plan: user.plan });
-      res.status(200).json({ token, user: { id: user._id, email: user.email, role: user.role, plan: user.plan } });
+      res.status(200).json({ token, user: { id: user._id, email: user.email, name: user.name, role: user.role, plan: user.plan } });
     } catch (err) {
       res.status(500).json({ message: "Internal server error" });
     }
@@ -360,6 +360,7 @@ export async function registerRoutes(
     res.json({ 
       id: user._id, 
       email: user.email, 
+      name: user.name,
       role: user.role, 
       plan: user.plan, 
       monthlyUsage: user.monthlyUsage || 0,
@@ -786,6 +787,7 @@ export async function registerRoutes(
       const sanitizedUsers = users.map(user => ({
         _id: user._id,
         email: user.email,
+        name: user.name,
         role: user.role,
         plan: user.plan,
         monthlyUsage: user.monthlyUsage,
