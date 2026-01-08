@@ -28,6 +28,48 @@ setInterval(cleanupExpiredDocuments, 30 * 60 * 1000);
 const parseXml = (xml: string) => new DOMParser().parseFromString(xml, "application/xml");
 const serializeXml = (doc: Document) => new XMLSerializer().serializeToString(doc);
 
+// Helper function to create text runs with proper line break handling
+const createTextRuns = (xmlDoc: Document, text: string, rPr?: Element) => {
+  const runs: Element[] = [];
+  
+  // Split text by line breaks
+  const lines = text.split('\n');
+  
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    
+    // Create run for text
+    if (line.length > 0) {
+      const r = xmlDoc.createElement("w:r");
+      if (rPr) {
+        const clonedRPr = rPr.cloneNode(true);
+        r.appendChild(clonedRPr);
+      }
+      
+      const t = xmlDoc.createElement("w:t");
+      t.setAttribute("xml:space", "preserve");
+      t.textContent = line;
+      r.appendChild(t);
+      runs.push(r);
+    }
+    
+    // Add line break if not the last line
+    if (i < lines.length - 1) {
+      const r = xmlDoc.createElement("w:r");
+      if (rPr) {
+        const clonedRPr = rPr.cloneNode(true);
+        r.appendChild(clonedRPr);
+      }
+      
+      const br = xmlDoc.createElement("w:br");
+      r.appendChild(br);
+      runs.push(r);
+    }
+  }
+  
+  return runs;
+};
+
 // Get all paragraphs with their text runs and style information
 const getParagraphs = (doc: Document) => {
   const paragraphs = Array.from(doc.getElementsByTagName("w:p"));
@@ -116,30 +158,20 @@ export class DocxService {
           const runs = Array.from(paraElement.getElementsByTagName("w:r"));
           
           if (runs.length > 0) {
-            // Clear existing runs except the first one
-            for (let i = runs.length - 1; i > 0; i--) {
-              runs[i].parentNode!.removeChild(runs[i]);
-            }
-            
-            // Update the first run with new text
+            // Get run properties from the first run for consistency
             const firstRun = runs[0];
-            const tNodes = Array.from(firstRun.getElementsByTagName("w:t"));
-            tNodes.forEach((t) => {
-              t.parentNode!.removeChild(t);
-            });
+            const rPr = firstRun.getElementsByTagName("w:rPr")[0];
             
-            const newText = xmlDoc.createElement("w:t");
-            newText.setAttribute("xml:space", "preserve");
-            newText.textContent = edit.text || "";
-            firstRun.appendChild(newText);
+            // Clear all existing runs
+            runs.forEach(run => run.parentNode!.removeChild(run));
+            
+            // Create new runs with proper line break handling
+            const newRuns = createTextRuns(xmlDoc, edit.text || "", rPr);
+            newRuns.forEach(run => paraElement.appendChild(run));
           } else {
-            // Create new run if none exists
-            const newRun = xmlDoc.createElement("w:r");
-            const newText = xmlDoc.createElement("w:t");
-            newText.setAttribute("xml:space", "preserve");
-            newText.textContent = edit.text || "";
-            newRun.appendChild(newText);
-            paraElement.appendChild(newRun);
+            // Create new runs if none exist
+            const newRuns = createTextRuns(xmlDoc, edit.text || "");
+            newRuns.forEach(run => paraElement.appendChild(run));
           }
           
           // Add the updated paragraph to the body
@@ -167,43 +199,23 @@ export class DocxService {
             if (sourceRuns.length > 0) {
               const sourceRPr = sourceRuns[0].getElementsByTagName("w:rPr")[0];
               
-              const r = xmlDoc.createElement("w:r");
-              if (sourceRPr) {
-                const clonedRPr = sourceRPr.cloneNode(true);
-                r.appendChild(clonedRPr);
-              }
-              
-              const t = xmlDoc.createElement("w:t");
-              t.setAttribute("xml:space", "preserve");
-              t.textContent = edit.text || "";
-              r.appendChild(t);
-              p.appendChild(r);
+              // Create runs with proper line break handling
+              const newRuns = createTextRuns(xmlDoc, edit.text || "", sourceRPr);
+              newRuns.forEach(run => p.appendChild(run));
             } else {
-              // Fallback: create basic run
-              const r = xmlDoc.createElement("w:r");
-              const t = xmlDoc.createElement("w:t");
-              t.setAttribute("xml:space", "preserve");
-              t.textContent = edit.text || "";
-              r.appendChild(t);
-              p.appendChild(r);
+              // Fallback: create basic runs
+              const newRuns = createTextRuns(xmlDoc, edit.text || "");
+              newRuns.forEach(run => p.appendChild(run));
             }
           } else {
             // Fallback: create basic paragraph
-            const r = xmlDoc.createElement("w:r");
-            const t = xmlDoc.createElement("w:t");
-            t.setAttribute("xml:space", "preserve");
-            t.textContent = edit.text || "";
-            r.appendChild(t);
-            p.appendChild(r);
+            const newRuns = createTextRuns(xmlDoc, edit.text || "");
+            newRuns.forEach(run => p.appendChild(run));
           }
         } else {
           // Create basic paragraph without style inheritance
-          const r = xmlDoc.createElement("w:r");
-          const t = xmlDoc.createElement("w:t");
-          t.setAttribute("xml:space", "preserve");
-          t.textContent = edit.text || "";
-          r.appendChild(t);
-          p.appendChild(r);
+          const newRuns = createTextRuns(xmlDoc, edit.text || "");
+          newRuns.forEach(run => p.appendChild(run));
         }
         
         // Add the new paragraph to the body in the current order
