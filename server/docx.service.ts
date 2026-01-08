@@ -28,71 +28,6 @@ setInterval(cleanupExpiredDocuments, 30 * 60 * 1000);
 const parseXml = (xml: string) => new DOMParser().parseFromString(xml, "application/xml");
 const serializeXml = (doc: Document) => new XMLSerializer().serializeToString(doc);
 
-// Helper function to normalize paragraph properties for consistency
-const normalizeParagraphProperties = (xmlDoc: Document, pPr: Element): Element => {
-  const normalizedPPr = pPr.cloneNode(true) as Element;
-  
-  // Ensure consistent spacing and alignment
-  const spacing = normalizedPPr.getElementsByTagName("w:spacing")[0];
-  if (spacing) {
-    // Normalize spacing values to prevent inconsistencies
-    const before = spacing.getAttribute("w:before");
-    const after = spacing.getAttribute("w:after");
-    const line = spacing.getAttribute("w:line");
-    
-    // Ensure spacing values are consistent
-    if (before) spacing.setAttribute("w:before", before);
-    if (after) spacing.setAttribute("w:after", after);
-    if (line) spacing.setAttribute("w:line", line);
-  }
-  
-  // Ensure indentation is properly preserved
-  const ind = normalizedPPr.getElementsByTagName("w:ind")[0];
-  if (ind) {
-    const left = ind.getAttribute("w:left");
-    const right = ind.getAttribute("w:right");
-    const firstLine = ind.getAttribute("w:firstLine");
-    
-    if (left) ind.setAttribute("w:left", left);
-    if (right) ind.setAttribute("w:right", right);
-    if (firstLine) ind.setAttribute("w:firstLine", firstLine);
-  }
-  
-  return normalizedPPr;
-};
-
-// Helper function to normalize run properties for consistency
-const normalizeRunProperties = (xmlDoc: Document, rPr: Element): Element => {
-  const normalizedRPr = rPr.cloneNode(true) as Element;
-  
-  // Ensure font properties are consistent
-  const rFonts = normalizedRPr.getElementsByTagName("w:rFonts")[0];
-  if (rFonts) {
-    // Preserve font family settings
-    const ascii = rFonts.getAttribute("w:ascii");
-    const hAnsi = rFonts.getAttribute("w:hAnsi");
-    const cs = rFonts.getAttribute("w:cs");
-    
-    if (ascii) rFonts.setAttribute("w:ascii", ascii);
-    if (hAnsi) rFonts.setAttribute("w:hAnsi", hAnsi);
-    if (cs) rFonts.setAttribute("w:cs", cs);
-  }
-  
-  // Ensure size properties are consistent
-  const sz = normalizedRPr.getElementsByTagName("w:sz")[0];
-  if (sz) {
-    const val = sz.getAttribute("w:val");
-    if (val) sz.setAttribute("w:val", val);
-  }
-  
-  const szCs = normalizedRPr.getElementsByTagName("w:szCs")[0];
-  if (szCs) {
-    const val = szCs.getAttribute("w:val");
-    if (val) szCs.setAttribute("w:val", val);
-  }
-  
-  return normalizedRPr;
-};
 const createTextRuns = (xmlDoc: Document, text: string, rPr?: Element) => {
   const runs: Element[] = [];
   
@@ -149,41 +84,6 @@ const createTextRuns = (xmlDoc: Document, text: string, rPr?: Element) => {
   return runs;
 };
 
-// Helper function to ensure proper document structure
-const ensureDocumentStructure = (xmlDoc: Document, body: Element) => {
-  // Ensure proper sectPr (section properties) at the end
-  let sectPr = body.getElementsByTagName("w:sectPr")[0];
-  if (sectPr) {
-    // Remove sectPr from its current position
-    sectPr.parentNode!.removeChild(sectPr);
-    // Add it back at the end
-    body.appendChild(sectPr);
-  }
-  
-  // Ensure consistent paragraph spacing throughout the document
-  const paragraphs = Array.from(body.getElementsByTagName("w:p"));
-  paragraphs.forEach((p, index) => {
-    const pPr = p.getElementsByTagName("w:pPr")[0];
-    if (pPr) {
-      // Ensure spacing is consistent
-      let spacing = pPr.getElementsByTagName("w:spacing")[0];
-      if (!spacing) {
-        spacing = xmlDoc.createElement("w:spacing");
-        pPr.appendChild(spacing);
-      }
-      
-      // Set default spacing if not present
-      if (!spacing.getAttribute("w:after")) {
-        spacing.setAttribute("w:after", "0");
-      }
-      if (!spacing.getAttribute("w:line")) {
-        spacing.setAttribute("w:line", "276");
-        spacing.setAttribute("w:lineRule", "auto");
-      }
-    }
-  });
-};
-
 // Get all paragraphs with their text runs and style information
 const getParagraphs = (doc: Document) => {
   const paragraphs = Array.from(doc.getElementsByTagName("w:p"));
@@ -237,149 +137,179 @@ export class DocxService {
   }
 
   // Unzip, replace nodes, zip
-  async rebuild(originalBuffer: Buffer, edits: { id: string | null; text: string; inheritStyleFrom?: string }[], paragraphMap: { [key: string]: number }) {
+  async rebuild(originalBuffer: Buffer, edits: { id: string | null; text: string; inheritStyleFrom?: string; isEmpty?: boolean }[], paragraphMap: { [key: string]: number }) {
     const zip = await JSZip.loadAsync(originalBuffer);
     const documentEntry = zip.file("word/document.xml");
     const xml = await documentEntry!.async("string");
     const xmlDoc = parseXml(xml);
 
     const paragraphs = getParagraphs(xmlDoc);
-    const body = xmlDoc.getElementsByTagName("w:body")[0];
 
-    // Instead of rebuilding the entire document, we'll update paragraphs in-place
-    // This preserves ALL other elements (shapes, drawings, tables, etc.) exactly where they are
+    // ULTRA-MINIMAL APPROACH: Only update text content, preserve everything else
+    // This approach maintains the exact XML structure to preserve shapes, drawings, etc.
     
-    // Create a map of paragraph elements to their indices for quick lookup
-    const paragraphElementMap = new Map<Element, number>();
-    paragraphs.forEach((para, index) => {
-      paragraphElementMap.set(para.element, index);
-    });
-
-    // Process existing paragraph updates first - update in-place to preserve surrounding elements
+    // Update existing paragraphs only - preserve all formatting and structure
     edits.forEach((edit) => {
       if (edit.id && paragraphMap[edit.id] !== undefined) {
         const index = paragraphMap[edit.id];
         const paraElement = paragraphs[index].element;
         
         if (paraElement) {
-          // Update the paragraph content in-place without moving it
-          const runs = Array.from(paraElement.getElementsByTagName("w:r"));
+          // Find all w:t elements (text nodes) in this paragraph
+          const textNodes = Array.from(paraElement.getElementsByTagName("w:t"));
           
-          if (runs.length > 0) {
-            // Get run properties from the first run for consistency
-            const firstRun = runs[0];
-            const originalRPr = firstRun.getElementsByTagName("w:rPr")[0];
-            let normalizedRPr: Element | undefined;
+          if (textNodes.length > 0) {
+            // Update only the first text node, preserve all formatting
+            const firstTextNode = textNodes[0];
             
-            if (originalRPr) {
-              normalizedRPr = normalizeRunProperties(xmlDoc, originalRPr);
+            // Handle line breaks by creating proper w:br elements
+            if (edit.text.includes('\n')) {
+              const parentRun = firstTextNode.parentNode as Element;
+              const runProps = parentRun.getElementsByTagName("w:rPr")[0];
+              
+              // Clear the parent run but keep run properties
+              while (parentRun.firstChild) {
+                parentRun.removeChild(parentRun.firstChild);
+              }
+              
+              // Re-add run properties if they existed
+              if (runProps) {
+                parentRun.appendChild(runProps.cloneNode(true));
+              }
+              
+              // Create text runs with line breaks
+              const textRuns = createTextRuns(xmlDoc, edit.text, runProps);
+              textRuns.forEach(run => {
+                // Move the content from the new run to the existing run
+                while (run.firstChild) {
+                  parentRun.appendChild(run.firstChild);
+                }
+              });
+            } else {
+              // Simple text replacement without line breaks
+              firstTextNode.textContent = edit.text || "";
             }
             
-            // Clear all existing runs
-            runs.forEach(run => run.parentNode!.removeChild(run));
-            
-            // Create new runs with proper line break handling and normalized formatting
-            const newRuns = createTextRuns(xmlDoc, edit.text || "", normalizedRPr);
-            newRuns.forEach(run => paraElement.appendChild(run));
+            // Remove additional text nodes to avoid duplication
+            for (let i = 1; i < textNodes.length; i++) {
+              const parentRun = textNodes[i].parentNode;
+              if (parentRun && parentRun.parentNode) {
+                parentRun.parentNode.removeChild(parentRun);
+              }
+            }
           } else {
-            // Create new runs if none exist
-            const newRuns = createTextRuns(xmlDoc, edit.text || "");
-            newRuns.forEach(run => paraElement.appendChild(run));
+            // If no text nodes exist, create minimal structure while preserving paragraph properties
+            const pPr = paraElement.getElementsByTagName("w:pPr")[0];
+            
+            // Clear paragraph content but keep paragraph properties
+            while (paraElement.firstChild) {
+              if (paraElement.firstChild === pPr) {
+                break;
+              }
+              paraElement.removeChild(paraElement.firstChild);
+            }
+            
+            // Remove all children except pPr
+            const children = Array.from(paraElement.childNodes);
+            children.forEach(child => {
+              if (child !== pPr) {
+                paraElement.removeChild(child);
+              }
+            });
+            
+            // Create new run with text
+            const newRun = xmlDoc.createElement("w:r");
+            const newText = xmlDoc.createElement("w:t");
+            newText.setAttribute("xml:space", "preserve");
+            newText.textContent = edit.text || "";
+            newRun.appendChild(newText);
+            paraElement.appendChild(newRun);
           }
         }
       }
     });
 
-    // Now handle new paragraphs - insert them in the correct positions without disturbing other elements
-    const newParagraphsToInsert: { element: Element; insertAfterElement?: Element }[] = [];
-    
-    edits.forEach((edit, editIndex) => {
-      if (edit.id === null) {
-        // Create new paragraph
-        const p = xmlDoc.createElement("w:p");
-        
-        // If inheritStyleFrom is provided, copy the style from that paragraph
-        if (edit.inheritStyleFrom && paragraphMap[edit.inheritStyleFrom] !== undefined) {
-          const sourceIndex = paragraphMap[edit.inheritStyleFrom];
-          const sourceElement = paragraphs[sourceIndex].element;
+    // Handle new paragraphs (id: null) by adding them at the end
+    const body = xmlDoc.getElementsByTagName("w:body")[0];
+    if (body) {
+      // Find section properties (sectPr) to insert before it
+      const sectPr = body.getElementsByTagName("w:sectPr")[0];
+      
+      edits.forEach((edit) => {
+        if (edit.id === null) {
+          // Create new paragraph
+          const newPara = xmlDoc.createElement("w:p");
           
-          if (sourceElement) {
-            // Copy paragraph properties with normalization
-            const sourcePPr = sourceElement.getElementsByTagName("w:pPr")[0];
+          // Add paragraph properties if inheriting style
+          if (edit.inheritStyleFrom && paragraphMap[edit.inheritStyleFrom] !== undefined) {
+            const sourceIndex = paragraphMap[edit.inheritStyleFrom];
+            const sourcePara = paragraphs[sourceIndex].element;
+            const sourcePPr = sourcePara.getElementsByTagName("w:pPr")[0];
+            
             if (sourcePPr) {
-              const normalizedPPr = normalizeParagraphProperties(xmlDoc, sourcePPr);
-              p.appendChild(normalizedPPr);
+              const clonedPPr = sourcePPr.cloneNode(true) as Element;
+              newPara.appendChild(clonedPPr);
             }
+          } else if (!edit.inheritStyleFrom && edit.isEmpty !== true) {
+            // Add basic paragraph properties for non-empty paragraphs
+            const pPr = xmlDoc.createElement("w:pPr");
+            const spacing = xmlDoc.createElement("w:spacing");
+            spacing.setAttribute("w:after", "0");
+            spacing.setAttribute("w:line", "276");
+            spacing.setAttribute("w:lineRule", "auto");
+            pPr.appendChild(spacing);
+            newPara.appendChild(pPr);
+          }
+          
+          // Add text content
+          if (edit.text || edit.isEmpty !== true) {
+            const newRun = xmlDoc.createElement("w:r");
             
-            // Get and normalize run properties from the first run of source paragraph
-            const sourceRuns = Array.from(sourceElement.getElementsByTagName("w:r"));
-            let normalizedRPr: Element | undefined;
-            
-            if (sourceRuns.length > 0) {
-              const originalRPr = sourceRuns[0].getElementsByTagName("w:rPr")[0];
-              if (originalRPr) {
-                normalizedRPr = normalizeRunProperties(xmlDoc, originalRPr);
+            // Inherit run properties if specified
+            if (edit.inheritStyleFrom && paragraphMap[edit.inheritStyleFrom] !== undefined) {
+              const sourceIndex = paragraphMap[edit.inheritStyleFrom];
+              const sourcePara = paragraphs[sourceIndex].element;
+              const sourceRun = sourcePara.getElementsByTagName("w:r")[0];
+              const sourceRPr = sourceRun?.getElementsByTagName("w:rPr")[0];
+              
+              if (sourceRPr) {
+                const clonedRPr = sourceRPr.cloneNode(true) as Element;
+                newRun.appendChild(clonedRPr);
               }
             }
             
-            // Create runs with proper line break handling and normalized formatting
-            const newRuns = createTextRuns(xmlDoc, edit.text || "", normalizedRPr);
-            newRuns.forEach(run => p.appendChild(run));
+            // Handle line breaks in new paragraphs
+            if (edit.text.includes('\n')) {
+              const runProps = newRun.getElementsByTagName("w:rPr")[0];
+              const textRuns = createTextRuns(xmlDoc, edit.text, runProps);
+              
+              // Add all text runs to the paragraph
+              textRuns.forEach(run => {
+                newPara.appendChild(run);
+              });
+            } else {
+              const newText = xmlDoc.createElement("w:t");
+              newText.setAttribute("xml:space", "preserve");
+              newText.textContent = edit.text || "";
+              newRun.appendChild(newText);
+              newPara.appendChild(newRun);
+            }
+          }
+          
+          // Insert before sectPr or at the end
+          if (sectPr) {
+            body.insertBefore(newPara, sectPr);
           } else {
-            // Fallback: create basic paragraph
-            const newRuns = createTextRuns(xmlDoc, edit.text || "");
-            newRuns.forEach(run => p.appendChild(run));
-          }
-        } else {
-          // Create basic paragraph without style inheritance
-          const newRuns = createTextRuns(xmlDoc, edit.text || "");
-          newRuns.forEach(run => p.appendChild(run));
-        }
-        
-        // Determine where to insert this new paragraph
-        // Look for the previous edit that was an existing paragraph
-        let insertAfterElement: Element | undefined;
-        for (let i = editIndex - 1; i >= 0; i--) {
-          const prevEdit = edits[i];
-          if (prevEdit.id && paragraphMap[prevEdit.id] !== undefined) {
-            const prevIndex = paragraphMap[prevEdit.id];
-            insertAfterElement = paragraphs[prevIndex].element;
-            break;
+            body.appendChild(newPara);
           }
         }
-        
-        newParagraphsToInsert.push({ element: p, insertAfterElement });
-      }
-    });
-
-    // Insert new paragraphs in the correct positions without disturbing other elements
-    newParagraphsToInsert.forEach(({ element, insertAfterElement }) => {
-      if (insertAfterElement) {
-        // Insert after the specified paragraph
-        const nextSibling = insertAfterElement.nextSibling;
-        if (nextSibling) {
-          body.insertBefore(element, nextSibling);
-        } else {
-          body.appendChild(element);
-        }
-      } else {
-        // Insert at the beginning if no previous paragraph found
-        const firstChild = body.firstChild;
-        if (firstChild) {
-          body.insertBefore(element, firstChild);
-        } else {
-          body.appendChild(element);
-        }
-      }
-    });
-
-    // Ensure proper document structure and consistency
-    ensureDocumentStructure(xmlDoc, body);
+      });
+    }
 
     const updatedXml = serializeXml(xmlDoc);
     zip.file("word/document.xml", updatedXml);
     
-    // Return the zip with ALL original files preserved (drawings, relationships, etc.)
+    // Return the zip with ALL original files preserved (shapes, images, etc.)
     return zip.generateAsync({ type: "nodebuffer" });
   }
 }

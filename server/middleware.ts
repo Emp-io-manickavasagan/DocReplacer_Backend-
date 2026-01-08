@@ -75,7 +75,7 @@ export const checkPlanLimit = async (req: AuthRequest, res: Response, next: Next
 
   const limits = {
     'FREE': 3,
-    'PRO': 30
+    'PRO': Infinity // Unlimited for PRO users
   };
   
   const limit = limits[user.plan as keyof typeof limits] || 0;
