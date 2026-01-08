@@ -7,7 +7,7 @@ export const paragraphMappings = new Map<string, { [key: string]: number }>();
 export const paragraphStyles = new Map<string, { [key: string]: string | null }>();
 export const documentTimestamps = new Map<string, number>();
 
-// Clean up expired documents (older than 1 hour)
+
 export const cleanupExpiredDocuments = () => {
   const oneHourAgo = Date.now() - (60 * 60 * 1000);
   
