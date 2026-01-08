@@ -119,7 +119,8 @@ export type PaymentType = {
 
 // Paragraph structure for the editor
 export interface DocxParagraph {
-  id: string;
+  id: string | null;
   text: string;
   style?: string;
+  isEmpty?: boolean;
 }

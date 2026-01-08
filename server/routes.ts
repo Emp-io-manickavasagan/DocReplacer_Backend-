@@ -436,7 +436,7 @@ export async function registerRoutes(
       }
       
       for (const para of paragraphs) {
-        if (!para.id || typeof para.text !== 'string') {
+        if (para.id === undefined || typeof para.text !== 'string') {
           return res.status(400).json({ message: "Invalid paragraph format" });
         }
         if (para.text.length > 10000) {
