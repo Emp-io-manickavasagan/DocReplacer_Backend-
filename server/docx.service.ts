@@ -152,9 +152,11 @@ const createTextRuns = (xmlDoc: Document, text: string, rPr?: Element) => {
 // Helper function to ensure proper document structure
 const ensureDocumentStructure = (xmlDoc: Document, body: Element) => {
   // Ensure proper sectPr (section properties) at the end
-  const sectPr = body.getElementsByTagName("w:sectPr")[0];
+  let sectPr = body.getElementsByTagName("w:sectPr")[0];
   if (sectPr) {
-    // Move sectPr to the end if it's not already there
+    // Remove sectPr from its current position
+    sectPr.parentNode!.removeChild(sectPr);
+    // Add it back at the end
     body.appendChild(sectPr);
   }
   
@@ -244,6 +246,19 @@ export class DocxService {
     const paragraphs = getParagraphs(xmlDoc);
     const body = xmlDoc.getElementsByTagName("w:body")[0];
 
+    // Get all child elements of the body (paragraphs, shapes, tables, etc.)
+    const allBodyElements = Array.from(body.childNodes).filter(node => node.nodeType === 1) as Element[];
+    
+    // Separate paragraphs from other elements
+    const paragraphElements = allBodyElements.filter(el => el.tagName === "w:p");
+    const nonParagraphElements = allBodyElements.filter(el => el.tagName !== "w:p");
+    
+    // Create a map of original paragraph positions to preserve document order
+    const elementPositions = new Map<Element, number>();
+    allBodyElements.forEach((el, index) => {
+      elementPositions.set(el, index);
+    });
+
     // Create a new document structure based on the edits array order
     // This ensures new paragraphs appear in the correct positions
     
@@ -258,7 +273,10 @@ export class DocxService {
       body.removeChild(body.firstChild);
     }
     
-    // Process edits in order and rebuild the document
+    // Create updated paragraphs based on edits
+    const updatedParagraphs: { element: Element; originalIndex?: number }[] = [];
+    
+    // Process edits in order and create updated paragraphs
     edits.forEach((edit) => {
       if (edit.id && paragraphMap[edit.id] !== undefined) {
         // Update existing paragraph and add it to the document
@@ -291,8 +309,11 @@ export class DocxService {
             newRuns.forEach(run => paraElement.appendChild(run));
           }
           
-          // Add the updated paragraph to the body
-          body.appendChild(paraElement);
+          // Store the updated paragraph with its original position
+          updatedParagraphs.push({ 
+            element: paraElement, 
+            originalIndex: index 
+          });
         }
       } else if (edit.id === null) {
         // Create new paragraph and add it in the current position
@@ -325,20 +346,53 @@ export class DocxService {
             // Create runs with proper line break handling and normalized formatting
             const newRuns = createTextRuns(xmlDoc, edit.text || "", normalizedRPr);
             newRuns.forEach(run => p.appendChild(run));
-            body.appendChild(p);
           } else {
             // Fallback: create basic paragraph
             const newRuns = createTextRuns(xmlDoc, edit.text || "");
             newRuns.forEach(run => p.appendChild(run));
-            body.appendChild(p);
           }
         } else {
           // Create basic paragraph without style inheritance
           const newRuns = createTextRuns(xmlDoc, edit.text || "");
           newRuns.forEach(run => p.appendChild(run));
-          body.appendChild(p);
         }
+        
+        // Store the new paragraph (no original index)
+        updatedParagraphs.push({ element: p });
       }
+    });
+
+    // Now rebuild the document maintaining the original order of all elements
+    // Create a combined list of all elements in their proper positions
+    const finalElements: Element[] = [];
+    let paragraphIndex = 0;
+    
+    // Go through original positions and place elements accordingly
+    for (let i = 0; i < allBodyElements.length; i++) {
+      const originalElement = allBodyElements[i];
+      
+      if (originalElement.tagName === "w:p") {
+        // This was a paragraph position - insert updated paragraph if available
+        if (paragraphIndex < updatedParagraphs.length) {
+          const updatedPara = updatedParagraphs[paragraphIndex];
+          finalElements.push(updatedPara.element);
+          paragraphIndex++;
+        }
+      } else {
+        // This is a non-paragraph element (shape, table, etc.) - preserve it
+        finalElements.push(originalElement);
+      }
+    }
+    
+    // Add any remaining new paragraphs at the end
+    while (paragraphIndex < updatedParagraphs.length) {
+      finalElements.push(updatedParagraphs[paragraphIndex].element);
+      paragraphIndex++;
+    }
+    
+    // Add all elements back to the body in the correct order
+    finalElements.forEach(element => {
+      body.appendChild(element);
     });
 
     // Ensure proper document structure and consistency
