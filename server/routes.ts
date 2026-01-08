@@ -319,7 +319,11 @@ export async function registerRoutes(
       }
 
       const hashedPassword = await bcrypt.hash(input.password, 10);
-      const user = await storage.createUser({ ...input, password: hashedPassword });
+      const user = await storage.createUser({ 
+        email: input.email, 
+        password: hashedPassword, 
+        name: input.name || input.email.split('@')[0] // Ensure name is always provided
+      });
       const token = generateToken({ id: user._id, email: user.email, role: user.role, plan: user.plan });
       
       res.status(201).json({ token, user: { id: user._id, email: user.email, name: user.name || user.email.split('@')[0], role: user.role, plan: user.plan } });
@@ -473,6 +477,68 @@ export async function registerRoutes(
       res.send(newBuffer);
     } catch (err) {
       res.status(500).json({ message: "Failed to export DOCX" });
+    }
+  });
+
+  // === PAYMENT CHECKOUT SESSION ===
+  app.post('/api/payment/create-checkout-session', authenticateToken, async (req: AuthRequest, res) => {
+    try {
+      const { user_id, plan, customer_email } = req.body;
+      
+      // Validate input
+      if (!user_id || !plan || !customer_email) {
+        return res.status(400).json({ error: 'Missing required fields' });
+      }
+      
+      // Ensure user can only create session for themselves
+      if (req.user!.id !== user_id) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+      
+      // Create checkout session with Dodo Payments API
+      const checkoutData = {
+        product_id: 'pdt_0NVX9quGOX5LINtgREm6f', // Your Dodo product ID
+        quantity: 1,
+        customer_email: customer_email,
+        return_url: `${process.env.FRONTEND_URL || 'https://www.docreplacer.online'}/payment-success?source=dodo&user_id=${user_id}`,
+        cancel_url: `${process.env.FRONTEND_URL || 'https://www.docreplacer.online'}/pricing?cancelled=true`,
+        metadata: {
+          user_id: user_id,
+          plan: plan,
+          frontend_url: process.env.FRONTEND_URL || 'https://www.docreplacer.online'
+        },
+        feature_flags: {
+          redirect_immediately: true // This ensures immediate redirect after payment
+        }
+      };
+      
+      // Make API call to Dodo to create checkout session
+      const dodoResponse = await fetch('https://api.dodopayments.com/v1/checkout-sessions', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${process.env.DODO_API_KEY}` // You'll need to add this to your .env
+        },
+        body: JSON.stringify(checkoutData)
+      });
+      
+      if (!dodoResponse.ok) {
+        const errorData = await dodoResponse.json().catch(() => ({}));
+        console.error('Dodo API Error:', errorData);
+        return res.status(500).json({ error: 'Failed to create checkout session' });
+      }
+      
+      const checkoutSession = await dodoResponse.json();
+      
+      // Return the checkout URL to the frontend
+      res.json({
+        checkout_url: checkoutSession.url,
+        session_id: checkoutSession.id
+      });
+      
+    } catch (error) {
+      console.error('Checkout session creation error:', error);
+      res.status(500).json({ error: 'Internal server error' });
     }
   });
 
