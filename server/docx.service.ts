@@ -4,12 +4,31 @@ import { randomUUID } from 'crypto';
 
 export const fileBufferStore = new Map<string, Buffer>();
 export const paragraphMappings = new Map<string, { [key: string]: number }>();
+export const paragraphStyles = new Map<string, { [key: string]: string | null }>();
+export const documentTimestamps = new Map<string, number>();
+
+// Clean up expired documents (older than 1 hour)
+export const cleanupExpiredDocuments = () => {
+  const oneHourAgo = Date.now() - (60 * 60 * 1000);
+  
+  for (const [documentId, timestamp] of Array.from(documentTimestamps.entries())) {
+    if (timestamp < oneHourAgo) {
+      fileBufferStore.delete(documentId);
+      paragraphMappings.delete(documentId);
+      paragraphStyles.delete(documentId);
+      documentTimestamps.delete(documentId);
+    }
+  }
+};
+
+// Set up automatic cleanup every 30 minutes
+setInterval(cleanupExpiredDocuments, 30 * 60 * 1000);
 
 // XML helpers
 const parseXml = (xml: string) => new DOMParser().parseFromString(xml, "application/xml");
 const serializeXml = (doc: Document) => new XMLSerializer().serializeToString(doc);
 
-// Get all paragraphs with their text runs
+// Get all paragraphs with their text runs and style information
 const getParagraphs = (doc: Document) => {
   const paragraphs = Array.from(doc.getElementsByTagName("w:p"));
   return paragraphs.map((p) => {
@@ -18,9 +37,15 @@ const getParagraphs = (doc: Document) => {
       const tNodes = Array.from(r.getElementsByTagName("w:t"));
       return tNodes.map((t) => t.textContent || "").join("");
     });
+    
+    // Extract paragraph properties for style inheritance
+    const pPr = p.getElementsByTagName("w:pPr")[0];
+    const styleInfo = pPr ? new XMLSerializer().serializeToString(pPr) : null;
+    
     return {
       element: p,
       text: textNodes.join(""),
+      styleInfo: styleInfo
     };
   });
 };
@@ -39,21 +64,24 @@ export class DocxService {
     const paragraphs = getParagraphs(xmlDoc);
 
     const paragraphMap: { [key: string]: number } = {};
+    const styleMap: { [key: string]: string | null } = {};
     const nodes = paragraphs.map((para, index) => {
       const id = randomUUID();
       paragraphMap[id] = index;
+      styleMap[id] = para.styleInfo;
       return { 
         id, 
         text: para.text,
-        isEmpty: para.text.trim() === ""
+        isEmpty: para.text.trim() === "",
+        styleInfo: para.styleInfo
       };
     });
 
-    return { nodes, paragraphMap };
+    return { nodes, paragraphMap, styleMap };
   }
 
   // Unzip, replace nodes, zip
-  async rebuild(originalBuffer: Buffer, edits: { id: string | null; text: string }[], paragraphMap: { [key: string]: number }) {
+  async rebuild(originalBuffer: Buffer, edits: { id: string | null; text: string; inheritStyleFrom?: string }[], paragraphMap: { [key: string]: number }) {
     const zip = await JSZip.loadAsync(originalBuffer);
     const documentEntry = zip.file("word/document.xml");
     const xml = await documentEntry!.async("string");
@@ -120,12 +148,63 @@ export class DocxService {
       } else if (edit.id === null) {
         // Create new paragraph and add it in the current position
         const p = xmlDoc.createElement("w:p");
-        const r = xmlDoc.createElement("w:r");
-        const t = xmlDoc.createElement("w:t");
-        t.setAttribute("xml:space", "preserve");
-        t.textContent = edit.text || "";
-        r.appendChild(t);
-        p.appendChild(r);
+        
+        // If inheritStyleFrom is provided, copy the style from that paragraph
+        if (edit.inheritStyleFrom && paragraphMap[edit.inheritStyleFrom] !== undefined) {
+          const sourceIndex = paragraphMap[edit.inheritStyleFrom];
+          const sourceElement = existingParagraphs.get(sourceIndex);
+          
+          if (sourceElement) {
+            // Copy paragraph properties (pPr) from source
+            const sourcePPr = sourceElement.getElementsByTagName("w:pPr")[0];
+            if (sourcePPr) {
+              const clonedPPr = sourcePPr.cloneNode(true);
+              p.appendChild(clonedPPr);
+            }
+            
+            // Copy run properties (rPr) from the first run of source paragraph
+            const sourceRuns = Array.from(sourceElement.getElementsByTagName("w:r"));
+            if (sourceRuns.length > 0) {
+              const sourceRPr = sourceRuns[0].getElementsByTagName("w:rPr")[0];
+              
+              const r = xmlDoc.createElement("w:r");
+              if (sourceRPr) {
+                const clonedRPr = sourceRPr.cloneNode(true);
+                r.appendChild(clonedRPr);
+              }
+              
+              const t = xmlDoc.createElement("w:t");
+              t.setAttribute("xml:space", "preserve");
+              t.textContent = edit.text || "";
+              r.appendChild(t);
+              p.appendChild(r);
+            } else {
+              // Fallback: create basic run
+              const r = xmlDoc.createElement("w:r");
+              const t = xmlDoc.createElement("w:t");
+              t.setAttribute("xml:space", "preserve");
+              t.textContent = edit.text || "";
+              r.appendChild(t);
+              p.appendChild(r);
+            }
+          } else {
+            // Fallback: create basic paragraph
+            const r = xmlDoc.createElement("w:r");
+            const t = xmlDoc.createElement("w:t");
+            t.setAttribute("xml:space", "preserve");
+            t.textContent = edit.text || "";
+            r.appendChild(t);
+            p.appendChild(r);
+          }
+        } else {
+          // Create basic paragraph without style inheritance
+          const r = xmlDoc.createElement("w:r");
+          const t = xmlDoc.createElement("w:t");
+          t.setAttribute("xml:space", "preserve");
+          t.textContent = edit.text || "";
+          r.appendChild(t);
+          p.appendChild(r);
+        }
         
         // Add the new paragraph to the body in the current order
         body.appendChild(p);

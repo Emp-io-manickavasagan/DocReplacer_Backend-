@@ -123,4 +123,6 @@ export interface DocxParagraph {
   text: string;
   style?: string;
   isEmpty?: boolean;
+  styleInfo?: string | null;
+  inheritStyleFrom?: string;
 }

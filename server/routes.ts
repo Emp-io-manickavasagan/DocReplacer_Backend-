@@ -6,7 +6,7 @@ import { z } from "zod";
 import bcrypt from "bcryptjs";
 import multer from "multer";
 import crypto from "crypto";
-import { docxService, fileBufferStore, paragraphMappings } from "./docx.service";
+import { docxService, fileBufferStore, paragraphMappings, paragraphStyles, documentTimestamps, cleanupExpiredDocuments } from "./docx.service";
 import { authenticateToken, authorizeRole, checkPlanLimit, generateToken, type AuthRequest } from "./middleware";
 import { sendOTP, generateOTP } from "./email.service";
 import { OTP, Payment } from "./models";
@@ -401,6 +401,8 @@ export async function registerRoutes(
       
       fileBufferStore.set(documentId, req.file.buffer);
       paragraphMappings.set(documentId, result.paragraphMap);
+      paragraphStyles.set(documentId, result.styleMap);
+      documentTimestamps.set(documentId, Date.now());
 
       await storage.createDocument({
         userId: req.user!.id,
@@ -442,6 +444,10 @@ export async function registerRoutes(
         if (para.text.length > 10000) {
           return res.status(400).json({ message: "Paragraph too long" });
         }
+        // Validate inheritStyleFrom if present
+        if (para.inheritStyleFrom && typeof para.inheritStyleFrom !== 'string') {
+          return res.status(400).json({ message: "Invalid inheritStyleFrom format" });
+        }
       }
       
       const originalBuffer = fileBufferStore.get(documentId);
@@ -454,6 +460,12 @@ export async function registerRoutes(
       const newBuffer = await docxService.rebuild(originalBuffer, paragraphs, paragraphMap);
       
       await storage.incrementMonthlyUsage(req.user!.id);
+      
+      // Clean up memory after successful export
+      fileBufferStore.delete(documentId);
+      paragraphMappings.delete(documentId);
+      paragraphStyles.delete(documentId);
+      documentTimestamps.delete(documentId);
       
       res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.wordprocessingml.document');
       res.setHeader('Content-Disposition', `attachment; filename="edited_${documentId}.docx"`);
@@ -687,6 +699,8 @@ export async function registerRoutes(
       // Clean up memory stores
       fileBufferStore.delete(documentId);
       paragraphMappings.delete(documentId);
+      paragraphStyles.delete(documentId);
+      documentTimestamps.delete(documentId);
       
       res.json({ success: true });
     } catch (error) {
@@ -782,6 +796,42 @@ export async function registerRoutes(
       res.json(sanitizedUsers);
     } catch (error) {
       res.status(500).json({ error: 'Failed to fetch users' });
+    }
+  });
+
+  // Admin memory management endpoints
+  app.get('/api/admin/memory-status', authenticateToken, authorizeRole(['ADMIN']), async (req: AuthRequest, res) => {
+    try {
+      const memoryStatus = {
+        documentsInMemory: fileBufferStore.size,
+        paragraphMappings: paragraphMappings.size,
+        paragraphStyles: paragraphStyles.size,
+        documentTimestamps: documentTimestamps.size,
+        oldestDocument: documentTimestamps.size > 0 ? Math.min(...Array.from(documentTimestamps.values())) : null,
+        newestDocument: documentTimestamps.size > 0 ? Math.max(...Array.from(documentTimestamps.values())) : null,
+        memoryUsage: process.memoryUsage()
+      };
+      
+      res.json(memoryStatus);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to get memory status' });
+    }
+  });
+
+  app.post('/api/admin/cleanup-memory', authenticateToken, authorizeRole(['ADMIN']), async (req: AuthRequest, res) => {
+    try {
+      const beforeCount = fileBufferStore.size;
+      cleanupExpiredDocuments();
+      const afterCount = fileBufferStore.size;
+      const cleanedUp = beforeCount - afterCount;
+      
+      res.json({ 
+        success: true, 
+        message: `Cleaned up ${cleanedUp} expired documents`,
+        documentsRemaining: afterCount
+      });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to cleanup memory' });
     }
   });
 
