@@ -10,7 +10,7 @@ export interface IStorage {
   // User
   getUser(id: string): Promise<UserType | null>;
   getUserByEmail(email: string): Promise<UserType | null>;
-  createUser(user: { email: string; password: string; name?: string; role?: string; isVerified?: boolean }): Promise<UserType>;
+  createUser(user: { email: string; password: string; name: string; role?: string; isVerified?: boolean }): Promise<UserType>;
   updateUserPlan(userId: string, plan: string): Promise<void>;
   updatePlanActivationDate(userId: string, date: Date): Promise<void>;
   updateUserRole(userId: string, role: string): Promise<void>;
@@ -66,7 +66,7 @@ export class DatabaseStorage implements IStorage {
     return await User.findOne({ email });
   }
 
-  async createUser(insertUser: { email: string; password: string; name?: string; role?: string; isVerified?: boolean }): Promise<UserType> {
+  async createUser(insertUser: { email: string; password: string; name: string; role?: string; isVerified?: boolean }): Promise<UserType> {
     const user = new User(insertUser);
     return await user.save();
   }

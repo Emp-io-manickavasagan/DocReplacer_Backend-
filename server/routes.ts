@@ -9,7 +9,7 @@ import crypto from "crypto";
 import { docxService, fileBufferStore, paragraphMappings, paragraphStyles, documentTimestamps, cleanupExpiredDocuments } from "./docx.service";
 import { authenticateToken, authorizeRole, checkPlanLimit, generateToken, type AuthRequest } from "./middleware";
 import { sendOTP, generateOTP } from "./email.service";
-import { OTP, Payment } from "./models";
+import { OTP, Payment, User } from "./models";
 
 const upload = multer({ 
   storage: multer.memoryStorage(),
@@ -223,7 +223,7 @@ export async function registerRoutes(
       await OTP.deleteOne({ _id: otpRecord._id });
       
       const token = generateToken({ id: user._id, email: user.email, role: user.role, plan: user.plan });
-      res.status(201).json({ token, user: { id: user._id, email: user.email, name: user.name, role: user.role, plan: user.plan } });
+      res.status(201).json({ token, user: { id: user._id, email: user.email, name: user.name || user.email.split('@')[0], role: user.role, plan: user.plan } });
     } catch (err) {
       res.status(500).json({ message: "Verification failed" });
     }
@@ -322,7 +322,7 @@ export async function registerRoutes(
       const user = await storage.createUser({ ...input, password: hashedPassword });
       const token = generateToken({ id: user._id, email: user.email, role: user.role, plan: user.plan });
       
-      res.status(201).json({ token, user: { id: user._id, email: user.email, name: user.name, role: user.role, plan: user.plan } });
+      res.status(201).json({ token, user: { id: user._id, email: user.email, name: user.name || user.email.split('@')[0], role: user.role, plan: user.plan } });
     } catch (err) {
        if (err instanceof z.ZodError) {
           return res.status(400).json({ message: err.errors[0].message });
@@ -341,7 +341,7 @@ export async function registerRoutes(
       }
 
       const token = generateToken({ id: user._id, email: user.email, role: user.role, plan: user.plan });
-      res.status(200).json({ token, user: { id: user._id, email: user.email, name: user.name, role: user.role, plan: user.plan } });
+      res.status(200).json({ token, user: { id: user._id, email: user.email, name: user.name || user.email.split('@')[0], role: user.role, plan: user.plan } });
     } catch (err) {
       res.status(500).json({ message: "Internal server error" });
     }
@@ -360,7 +360,7 @@ export async function registerRoutes(
     res.json({ 
       id: user._id, 
       email: user.email, 
-      name: user.name,
+      name: user.name || user.email.split('@')[0], // Fallback to email prefix if name is missing
       role: user.role, 
       plan: user.plan, 
       monthlyUsage: user.monthlyUsage || 0,
@@ -787,7 +787,7 @@ export async function registerRoutes(
       const sanitizedUsers = users.map(user => ({
         _id: user._id,
         email: user.email,
-        name: user.name,
+        name: user.name || user.email.split('@')[0], // Fallback for users without names
         role: user.role,
         plan: user.plan,
         monthlyUsage: user.monthlyUsage,
@@ -798,6 +798,26 @@ export async function registerRoutes(
       res.json(sanitizedUsers);
     } catch (error) {
       res.status(500).json({ error: 'Failed to fetch users' });
+    }
+  });
+
+  // Migration endpoint to fix users without names
+  app.post('/api/admin/fix-user-names', authenticateToken, authorizeRole(['ADMIN']), async (req: AuthRequest, res) => {
+    try {
+      const users = await storage.getUsers();
+      let updatedCount = 0;
+      
+      for (const user of users) {
+        if (!user.name || user.name.trim() === '') {
+          const defaultName = user.email.split('@')[0];
+          await User.findByIdAndUpdate(user._id, { name: defaultName });
+          updatedCount++;
+        }
+      }
+      
+      res.json({ message: `Updated ${updatedCount} users with missing names` });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fix user names' });
     }
   });
 
