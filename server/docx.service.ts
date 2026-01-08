@@ -28,24 +28,70 @@ setInterval(cleanupExpiredDocuments, 30 * 60 * 1000);
 const parseXml = (xml: string) => new DOMParser().parseFromString(xml, "application/xml");
 const serializeXml = (doc: Document) => new XMLSerializer().serializeToString(doc);
 
-// Helper function to safely clone paragraph properties
-const cloneParagraphProperties = (xmlDoc: Document, sourcePPr: Element): Element => {
-  const clonedPPr = sourcePPr.cloneNode(true) as Element;
+// Helper function to normalize paragraph properties for consistency
+const normalizeParagraphProperties = (xmlDoc: Document, pPr: Element): Element => {
+  const normalizedPPr = pPr.cloneNode(true) as Element;
   
-  // Ensure all important alignment and spacing properties are preserved
-  // This includes: w:jc (justification/alignment), w:spacing, w:ind (indentation), etc.
+  // Ensure consistent spacing and alignment
+  const spacing = normalizedPPr.getElementsByTagName("w:spacing")[0];
+  if (spacing) {
+    // Normalize spacing values to prevent inconsistencies
+    const before = spacing.getAttribute("w:before");
+    const after = spacing.getAttribute("w:after");
+    const line = spacing.getAttribute("w:line");
+    
+    // Ensure spacing values are consistent
+    if (before) spacing.setAttribute("w:before", before);
+    if (after) spacing.setAttribute("w:after", after);
+    if (line) spacing.setAttribute("w:line", line);
+  }
   
-  return clonedPPr;
+  // Ensure indentation is properly preserved
+  const ind = normalizedPPr.getElementsByTagName("w:ind")[0];
+  if (ind) {
+    const left = ind.getAttribute("w:left");
+    const right = ind.getAttribute("w:right");
+    const firstLine = ind.getAttribute("w:firstLine");
+    
+    if (left) ind.setAttribute("w:left", left);
+    if (right) ind.setAttribute("w:right", right);
+    if (firstLine) ind.setAttribute("w:firstLine", firstLine);
+  }
+  
+  return normalizedPPr;
 };
 
-// Helper function to safely clone run properties
-const cloneRunProperties = (xmlDoc: Document, sourceRPr: Element): Element => {
-  const clonedRPr = sourceRPr.cloneNode(true) as Element;
+// Helper function to normalize run properties for consistency
+const normalizeRunProperties = (xmlDoc: Document, rPr: Element): Element => {
+  const normalizedRPr = rPr.cloneNode(true) as Element;
   
-  // Ensure all formatting properties are preserved
-  // This includes: w:rFonts, w:sz (size), w:color, w:b (bold), w:i (italic), etc.
+  // Ensure font properties are consistent
+  const rFonts = normalizedRPr.getElementsByTagName("w:rFonts")[0];
+  if (rFonts) {
+    // Preserve font family settings
+    const ascii = rFonts.getAttribute("w:ascii");
+    const hAnsi = rFonts.getAttribute("w:hAnsi");
+    const cs = rFonts.getAttribute("w:cs");
+    
+    if (ascii) rFonts.setAttribute("w:ascii", ascii);
+    if (hAnsi) rFonts.setAttribute("w:hAnsi", hAnsi);
+    if (cs) rFonts.setAttribute("w:cs", cs);
+  }
   
-  return clonedRPr;
+  // Ensure size properties are consistent
+  const sz = normalizedRPr.getElementsByTagName("w:sz")[0];
+  if (sz) {
+    const val = sz.getAttribute("w:val");
+    if (val) sz.setAttribute("w:val", val);
+  }
+  
+  const szCs = normalizedRPr.getElementsByTagName("w:szCs")[0];
+  if (szCs) {
+    const val = szCs.getAttribute("w:val");
+    if (val) szCs.setAttribute("w:val", val);
+  }
+  
+  return normalizedRPr;
 };
 const createTextRuns = (xmlDoc: Document, text: string, rPr?: Element) => {
   const runs: Element[] = [];
@@ -101,6 +147,39 @@ const createTextRuns = (xmlDoc: Document, text: string, rPr?: Element) => {
   }
   
   return runs;
+};
+
+// Helper function to ensure proper document structure
+const ensureDocumentStructure = (xmlDoc: Document, body: Element) => {
+  // Ensure proper sectPr (section properties) at the end
+  const sectPr = body.getElementsByTagName("w:sectPr")[0];
+  if (sectPr) {
+    // Move sectPr to the end if it's not already there
+    body.appendChild(sectPr);
+  }
+  
+  // Ensure consistent paragraph spacing throughout the document
+  const paragraphs = Array.from(body.getElementsByTagName("w:p"));
+  paragraphs.forEach((p, index) => {
+    const pPr = p.getElementsByTagName("w:pPr")[0];
+    if (pPr) {
+      // Ensure spacing is consistent
+      let spacing = pPr.getElementsByTagName("w:spacing")[0];
+      if (!spacing) {
+        spacing = xmlDoc.createElement("w:spacing");
+        pPr.appendChild(spacing);
+      }
+      
+      // Set default spacing if not present
+      if (!spacing.getAttribute("w:after")) {
+        spacing.setAttribute("w:after", "0");
+      }
+      if (!spacing.getAttribute("w:line")) {
+        spacing.setAttribute("w:line", "276");
+        spacing.setAttribute("w:lineRule", "auto");
+      }
+    }
+  });
 };
 
 // Get all paragraphs with their text runs and style information
@@ -193,13 +272,18 @@ export class DocxService {
           if (runs.length > 0) {
             // Get run properties from the first run for consistency
             const firstRun = runs[0];
-            const rPr = firstRun.getElementsByTagName("w:rPr")[0];
+            const originalRPr = firstRun.getElementsByTagName("w:rPr")[0];
+            let normalizedRPr: Element | undefined;
+            
+            if (originalRPr) {
+              normalizedRPr = normalizeRunProperties(xmlDoc, originalRPr);
+            }
             
             // Clear all existing runs
             runs.forEach(run => run.parentNode!.removeChild(run));
             
-            // Create new runs with proper line break handling
-            const newRuns = createTextRuns(xmlDoc, edit.text || "", rPr);
+            // Create new runs with proper line break handling and normalized formatting
+            const newRuns = createTextRuns(xmlDoc, edit.text || "", normalizedRPr);
             newRuns.forEach(run => paraElement.appendChild(run));
           } else {
             // Create new runs if none exist
@@ -220,45 +304,28 @@ export class DocxService {
           const sourceElement = existingParagraphs.get(sourceIndex);
           
           if (sourceElement) {
-            // Create a complete copy of the source paragraph structure
-            const fullClone = sourceElement.cloneNode(true) as Element;
-            
-            // Clear all text content from the cloned runs but keep the structure
-            const clonedRuns = Array.from(fullClone.getElementsByTagName("w:r"));
-            clonedRuns.forEach(run => {
-              // Remove all text nodes but keep formatting
-              const textNodes = Array.from(run.getElementsByTagName("w:t"));
-              textNodes.forEach(textNode => textNode.parentNode!.removeChild(textNode));
-              
-              // Remove line breaks
-              const breaks = Array.from(run.getElementsByTagName("w:br"));
-              breaks.forEach(br => br.parentNode!.removeChild(br));
-            });
-            
-            // Now add our new content with the same structure
-            if (clonedRuns.length > 0) {
-              // Use the first run as template and remove others
-              for (let i = clonedRuns.length - 1; i > 0; i--) {
-                clonedRuns[i].parentNode!.removeChild(clonedRuns[i]);
-              }
-              
-              const templateRun = clonedRuns[0];
-              const rPr = templateRun.getElementsByTagName("w:rPr")[0];
-              
-              // Remove the template run
-              templateRun.parentNode!.removeChild(templateRun);
-              
-              // Create new runs with our text
-              const newRuns = createTextRuns(xmlDoc, edit.text || "", rPr);
-              newRuns.forEach(run => fullClone.appendChild(run));
-            } else {
-              // No runs in source, create basic ones
-              const newRuns = createTextRuns(xmlDoc, edit.text || "");
-              newRuns.forEach(run => fullClone.appendChild(run));
+            // Copy paragraph properties with normalization
+            const sourcePPr = sourceElement.getElementsByTagName("w:pPr")[0];
+            if (sourcePPr) {
+              const normalizedPPr = normalizeParagraphProperties(xmlDoc, sourcePPr);
+              p.appendChild(normalizedPPr);
             }
             
-            // Add the fully structured clone to the body
-            body.appendChild(fullClone);
+            // Get and normalize run properties from the first run of source paragraph
+            const sourceRuns = Array.from(sourceElement.getElementsByTagName("w:r"));
+            let normalizedRPr: Element | undefined;
+            
+            if (sourceRuns.length > 0) {
+              const originalRPr = sourceRuns[0].getElementsByTagName("w:rPr")[0];
+              if (originalRPr) {
+                normalizedRPr = normalizeRunProperties(xmlDoc, originalRPr);
+              }
+            }
+            
+            // Create runs with proper line break handling and normalized formatting
+            const newRuns = createTextRuns(xmlDoc, edit.text || "", normalizedRPr);
+            newRuns.forEach(run => p.appendChild(run));
+            body.appendChild(p);
           } else {
             // Fallback: create basic paragraph
             const newRuns = createTextRuns(xmlDoc, edit.text || "");
@@ -273,6 +340,9 @@ export class DocxService {
         }
       }
     });
+
+    // Ensure proper document structure and consistency
+    ensureDocumentStructure(xmlDoc, body);
 
     const updatedXml = serializeXml(xmlDoc);
     zip.file("word/document.xml", updatedXml);
