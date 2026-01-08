@@ -28,7 +28,25 @@ setInterval(cleanupExpiredDocuments, 30 * 60 * 1000);
 const parseXml = (xml: string) => new DOMParser().parseFromString(xml, "application/xml");
 const serializeXml = (doc: Document) => new XMLSerializer().serializeToString(doc);
 
-// Helper function to create text runs with proper line break handling
+// Helper function to safely clone paragraph properties
+const cloneParagraphProperties = (xmlDoc: Document, sourcePPr: Element): Element => {
+  const clonedPPr = sourcePPr.cloneNode(true) as Element;
+  
+  // Ensure all important alignment and spacing properties are preserved
+  // This includes: w:jc (justification/alignment), w:spacing, w:ind (indentation), etc.
+  
+  return clonedPPr;
+};
+
+// Helper function to safely clone run properties
+const cloneRunProperties = (xmlDoc: Document, sourceRPr: Element): Element => {
+  const clonedRPr = sourceRPr.cloneNode(true) as Element;
+  
+  // Ensure all formatting properties are preserved
+  // This includes: w:rFonts, w:sz (size), w:color, w:b (bold), w:i (italic), etc.
+  
+  return clonedRPr;
+};
 const createTextRuns = (xmlDoc: Document, text: string, rPr?: Element) => {
   const runs: Element[] = [];
   
@@ -42,7 +60,7 @@ const createTextRuns = (xmlDoc: Document, text: string, rPr?: Element) => {
     if (line.length > 0) {
       const r = xmlDoc.createElement("w:r");
       if (rPr) {
-        const clonedRPr = rPr.cloneNode(true);
+        const clonedRPr = rPr.cloneNode(true) as Element;
         r.appendChild(clonedRPr);
       }
       
@@ -57,7 +75,7 @@ const createTextRuns = (xmlDoc: Document, text: string, rPr?: Element) => {
     if (i < lines.length - 1) {
       const r = xmlDoc.createElement("w:r");
       if (rPr) {
-        const clonedRPr = rPr.cloneNode(true);
+        const clonedRPr = rPr.cloneNode(true) as Element;
         r.appendChild(clonedRPr);
       }
       
@@ -65,6 +83,21 @@ const createTextRuns = (xmlDoc: Document, text: string, rPr?: Element) => {
       r.appendChild(br);
       runs.push(r);
     }
+  }
+  
+  // If no text content, create at least one empty run to maintain structure
+  if (runs.length === 0) {
+    const r = xmlDoc.createElement("w:r");
+    if (rPr) {
+      const clonedRPr = rPr.cloneNode(true) as Element;
+      r.appendChild(clonedRPr);
+    }
+    
+    const t = xmlDoc.createElement("w:t");
+    t.setAttribute("xml:space", "preserve");
+    t.textContent = "";
+    r.appendChild(t);
+    runs.push(r);
   }
   
   return runs;
@@ -187,39 +220,57 @@ export class DocxService {
           const sourceElement = existingParagraphs.get(sourceIndex);
           
           if (sourceElement) {
-            // Copy paragraph properties (pPr) from source
-            const sourcePPr = sourceElement.getElementsByTagName("w:pPr")[0];
-            if (sourcePPr) {
-              const clonedPPr = sourcePPr.cloneNode(true);
-              p.appendChild(clonedPPr);
+            // Create a complete copy of the source paragraph structure
+            const fullClone = sourceElement.cloneNode(true) as Element;
+            
+            // Clear all text content from the cloned runs but keep the structure
+            const clonedRuns = Array.from(fullClone.getElementsByTagName("w:r"));
+            clonedRuns.forEach(run => {
+              // Remove all text nodes but keep formatting
+              const textNodes = Array.from(run.getElementsByTagName("w:t"));
+              textNodes.forEach(textNode => textNode.parentNode!.removeChild(textNode));
+              
+              // Remove line breaks
+              const breaks = Array.from(run.getElementsByTagName("w:br"));
+              breaks.forEach(br => br.parentNode!.removeChild(br));
+            });
+            
+            // Now add our new content with the same structure
+            if (clonedRuns.length > 0) {
+              // Use the first run as template and remove others
+              for (let i = clonedRuns.length - 1; i > 0; i--) {
+                clonedRuns[i].parentNode!.removeChild(clonedRuns[i]);
+              }
+              
+              const templateRun = clonedRuns[0];
+              const rPr = templateRun.getElementsByTagName("w:rPr")[0];
+              
+              // Remove the template run
+              templateRun.parentNode!.removeChild(templateRun);
+              
+              // Create new runs with our text
+              const newRuns = createTextRuns(xmlDoc, edit.text || "", rPr);
+              newRuns.forEach(run => fullClone.appendChild(run));
+            } else {
+              // No runs in source, create basic ones
+              const newRuns = createTextRuns(xmlDoc, edit.text || "");
+              newRuns.forEach(run => fullClone.appendChild(run));
             }
             
-            // Copy run properties (rPr) from the first run of source paragraph
-            const sourceRuns = Array.from(sourceElement.getElementsByTagName("w:r"));
-            if (sourceRuns.length > 0) {
-              const sourceRPr = sourceRuns[0].getElementsByTagName("w:rPr")[0];
-              
-              // Create runs with proper line break handling
-              const newRuns = createTextRuns(xmlDoc, edit.text || "", sourceRPr);
-              newRuns.forEach(run => p.appendChild(run));
-            } else {
-              // Fallback: create basic runs
-              const newRuns = createTextRuns(xmlDoc, edit.text || "");
-              newRuns.forEach(run => p.appendChild(run));
-            }
+            // Add the fully structured clone to the body
+            body.appendChild(fullClone);
           } else {
             // Fallback: create basic paragraph
             const newRuns = createTextRuns(xmlDoc, edit.text || "");
             newRuns.forEach(run => p.appendChild(run));
+            body.appendChild(p);
           }
         } else {
           // Create basic paragraph without style inheritance
           const newRuns = createTextRuns(xmlDoc, edit.text || "");
           newRuns.forEach(run => p.appendChild(run));
+          body.appendChild(p);
         }
-        
-        // Add the new paragraph to the body in the current order
-        body.appendChild(p);
       }
     });
 
