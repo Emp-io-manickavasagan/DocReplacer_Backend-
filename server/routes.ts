@@ -543,12 +543,8 @@ export async function registerRoutes(
           }
         }
         
-        // Log API response for debugging
-        const errorText = await dodoResponse.text();
-        console.error('Dodo API Error:', dodoResponse.status, errorText);
-        
       } catch (apiError) {
-        console.error('Dodo API Request Failed:', apiError);
+        // Silent fallback to URL method
       }
       
       // Fallback to direct URL approach if API fails
@@ -574,7 +570,6 @@ export async function registerRoutes(
       });
       
     } catch (error) {
-      console.error('Checkout session creation error:', error);
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       res.status(500).json({ error: 'Internal server error', details: errorMessage });
     }
