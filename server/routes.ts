@@ -502,7 +502,8 @@ export async function registerRoutes(
       }
       
       const frontendUrl = process.env.FRONTEND_URL || 'https://www.docreplacer.online';
-      const returnUrl = `${frontendUrl}/payment-success?source=dodo&user_id=${user_id}`;
+      // Let Dodo handle the success page first, then we'll redirect from there
+      const returnUrl = `${frontendUrl}/dodo-redirect.html?user_id=${user_id}&plan=${plan}`;
       const cancelUrl = `${frontendUrl}/pricing?cancelled=true`;
       
       // Try to create proper Dodo checkout session via API
@@ -557,16 +558,10 @@ export async function registerRoutes(
         customer_email: customer_email,
         success_url: returnUrl,
         cancel_url: cancelUrl,
-        return_url: returnUrl,
-        redirect_url: returnUrl,
-        // Metadata
+        // Metadata for webhook
         'metadata[user_id]': user_id,
         'metadata[plan]': plan,
-        'metadata[frontend_url]': frontendUrl,
-        'metadata[return_url]': returnUrl,
-        // Try to force redirect behavior
-        'redirect_immediately': 'true',
-        'auto_redirect': 'true'
+        'metadata[frontend_url]': frontendUrl
       });
       
       const checkoutUrl = `${baseUrl}?${params.toString()}`;
@@ -664,7 +659,7 @@ export async function registerRoutes(
         
         // Get redirect URL from metadata or use default
         const frontendUrl = metadata?.frontend_url || process.env.FRONTEND_URL || 'https://www.docreplacer.online';
-        const redirectUrl = `${frontendUrl}/payment-success?subscription_id=${subscription_id}`;
+        const redirectUrl = `${frontendUrl}/payment-success?subscription_id=${subscription_id}&plan_activated=true`;
         
         res.json({ 
           success: true,
