@@ -495,50 +495,93 @@ export async function registerRoutes(
         return res.status(403).json({ error: 'Unauthorized' });
       }
       
-      // Create checkout session with Dodo Payments API
-      const checkoutData = {
-        product_id: 'pdt_0NVX9quGOX5LINtgREm6f', // Your Dodo product ID
-        quantity: 1,
-        customer_email: customer_email,
-        return_url: `${process.env.FRONTEND_URL || 'https://www.docreplacer.online'}/payment-success?source=dodo&user_id=${user_id}`,
-        cancel_url: `${process.env.FRONTEND_URL || 'https://www.docreplacer.online'}/pricing?cancelled=true`,
-        metadata: {
-          user_id: user_id,
-          plan: plan,
-          frontend_url: process.env.FRONTEND_URL || 'https://www.docreplacer.online'
-        },
-        feature_flags: {
-          redirect_immediately: true // This ensures immediate redirect after payment
-        }
-      };
-      
-      // Make API call to Dodo to create checkout session
-      const dodoResponse = await fetch('https://api.dodopayments.com/v1/checkout-sessions', {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${process.env.DODO_API_KEY}` // You'll need to add this to your .env
-        },
-        body: JSON.stringify(checkoutData)
-      });
-      
-      if (!dodoResponse.ok) {
-        const errorData = await dodoResponse.json().catch(() => ({}));
-        console.error('Dodo API Error:', errorData);
-        return res.status(500).json({ error: 'Failed to create checkout session' });
+      // Validate email format
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(customer_email)) {
+        return res.status(400).json({ error: 'Invalid email format' });
       }
       
-      const checkoutSession = await dodoResponse.json();
+      const frontendUrl = process.env.FRONTEND_URL || 'https://www.docreplacer.online';
+      const returnUrl = `${frontendUrl}/payment-success?source=dodo&user_id=${user_id}`;
+      const cancelUrl = `${frontendUrl}/pricing?cancelled=true`;
+      
+      // Try to create proper Dodo checkout session via API
+      try {
+        const dodoResponse = await fetch('https://api.dodopayments.com/v1/checkout-sessions', {
+          method: 'POST',
+          headers: {
+            'Authorization': `Bearer ${process.env.DODO_API_KEY}`,
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            product_id: 'pdt_0NVX9quGOX5LINtgREm6f',
+            quantity: 1,
+            customer_email: customer_email,
+            feature_flags: {
+              redirect_immediately: true
+            },
+            return_url: returnUrl,
+            cancel_url: cancelUrl,
+            metadata: {
+              user_id: user_id,
+              plan: plan,
+              frontend_url: frontendUrl
+            }
+          })
+        });
+        
+        if (dodoResponse.ok) {
+          const dodoData = await dodoResponse.json();
+          
+          if (dodoData.checkout_url) {
+            return res.json({
+              checkout_url: dodoData.checkout_url,
+              return_url: returnUrl,
+              method: 'api'
+            });
+          }
+        }
+        
+        // Log API response for debugging
+        const errorText = await dodoResponse.text();
+        console.error('Dodo API Error:', dodoResponse.status, errorText);
+        
+      } catch (apiError) {
+        console.error('Dodo API Request Failed:', apiError);
+      }
+      
+      // Fallback to direct URL approach if API fails
+      const baseUrl = 'https://checkout.dodopayments.com/buy/pdt_0NVX9quGOX5LINtgREm6f';
+      const params = new URLSearchParams({
+        quantity: '1',
+        customer_email: customer_email,
+        success_url: returnUrl,
+        cancel_url: cancelUrl,
+        return_url: returnUrl,
+        redirect_url: returnUrl,
+        // Metadata
+        'metadata[user_id]': user_id,
+        'metadata[plan]': plan,
+        'metadata[frontend_url]': frontendUrl,
+        'metadata[return_url]': returnUrl,
+        // Try to force redirect behavior
+        'redirect_immediately': 'true',
+        'auto_redirect': 'true'
+      });
+      
+      const checkoutUrl = `${baseUrl}?${params.toString()}`;
       
       // Return the checkout URL to the frontend
       res.json({
-        checkout_url: checkoutSession.url,
-        session_id: checkoutSession.id
+        checkout_url: checkoutUrl,
+        return_url: returnUrl,
+        method: 'fallback'
       });
       
     } catch (error) {
       console.error('Checkout session creation error:', error);
-      res.status(500).json({ error: 'Internal server error' });
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+      res.status(500).json({ error: 'Internal server error', details: errorMessage });
     }
   });
 
