@@ -29,6 +29,8 @@ export interface IStorage {
   // Payment
   createPayment(payment: { userId: string; dodoPurchaseId: string; productId: string; amount: number; status: string; customerEmail?: string }): Promise<PaymentType>;
   updatePaymentStatus(dodoPurchaseId: string, status: string, subscriptionData?: { startDate: Date; endDate: Date }): Promise<void>;
+  updatePaymentAmount(dodoPurchaseId: string, amount: number): Promise<void>;
+  updateUserPlanExpiration(userId: string, expirationDate: Date): Promise<void>;
   getPaymentByPurchaseId(dodoPurchaseId: string): Promise<PaymentType | null>;
   getPayments(): Promise<PaymentType[]>;
   getUsers(): Promise<UserType[]>;
@@ -144,6 +146,14 @@ export class DatabaseStorage implements IStorage {
       updates.subscriptionEndDate = subscriptionData.endDate;
     }
     await Payment.findOneAndUpdate({ dodoPurchaseId }, updates);
+  }
+
+  async updatePaymentAmount(dodoPurchaseId: string, amount: number): Promise<void> {
+    await Payment.findOneAndUpdate({ dodoPurchaseId }, { amount });
+  }
+
+  async updateUserPlanExpiration(userId: string, expirationDate: Date): Promise<void> {
+    await User.findByIdAndUpdate(userId, { planExpiresAt: expirationDate });
   }
 
   async getPaymentByPurchaseId(dodoPurchaseId: string): Promise<PaymentType | null> {

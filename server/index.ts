@@ -69,15 +69,18 @@ app.use((req, res, next) => {
         'https://www.docreplacer.online',
         'https://docreplacer.online'
       ]
-    : ['http://localhost:3000', 'http://localhost:5173', 'http://localhost:4173'];
+    : [
+        'https://www.docreplacer.online',
+        'https://docreplacer.online'
+      ];
   
   const origin = req.headers.origin;
   
-  // Allow all origins in development or if no origin (direct API calls)
-  if (process.env.NODE_ENV !== 'production' || !origin) {
-    res.header('Access-Control-Allow-Origin', '*');
-  } else if (allowedOrigins.includes(origin)) {
+  // Allow only production origins
+  if (allowedOrigins.includes(origin)) {
     res.header('Access-Control-Allow-Origin', origin);
+  } else {
+    res.header('Access-Control-Allow-Origin', 'https://www.docreplacer.online');
   }
   
   res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS');
