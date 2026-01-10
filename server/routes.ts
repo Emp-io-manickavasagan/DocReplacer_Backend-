@@ -509,13 +509,38 @@ export async function registerRoutes(
       const apiKey = process.env.DODO_API_KEY || '';
       console.log(`Using Dodo API Key: ${apiKey.substring(0, 8)}... (Length: ${apiKey.length})`);
 
-      // Determine endpoint based on key prefix
-      const isTestKey = apiKey.startsWith('test_');
-      const dodoEndpoint = isTestKey
-        ? 'https://test.dodopayments.com/v1/checkouts'
-        : 'https://live.dodopayments.com/v1/checkouts';
+      // Use the standard test endpoint (no /v1)
+      const dodoEndpoint = 'https://test.dodopayments.com/checkouts';
 
       console.log(`Using Dodo Endpoint: ${dodoEndpoint}`);
+
+      const payload = {
+        product_cart: [{
+          product_id: 'pdt_0NVxNSCQ9JYoBiK8mVUnI',
+          quantity: 1
+        }],
+        billing: {
+          city: "New York",
+          country: "US",
+          state: "NY",
+          street: "123 Main St",
+          zipcode: "10001"
+        },
+        return_url: returnUrl,
+        cancel_url: cancelUrl,
+        customer: {
+          email: customer_email,
+          name: customer_email.split('@')[0]
+        },
+        metadata: {
+          user_id: user_id,
+          plan: plan,
+          frontend_url: frontendUrl,
+          ref: 'doc_replacer_v1'
+        }
+      };
+
+      console.log('Dodo Request Payload:', JSON.stringify(payload, null, 2));
 
       // Try to create proper Dodo checkout session via API
       try {
@@ -525,46 +550,21 @@ export async function registerRoutes(
             'Authorization': `Bearer ${apiKey}`,
             'Content-Type': 'application/json'
           },
-          body: JSON.stringify({
-            product_cart: [{
-              product_id: 'pdt_0NVxNSCQ9JYoBiK8mVUnI',
-              quantity: 1
-            }],
-            billing: {
-              city: "New York",
-              country: "US",
-              state: "NY",
-              street: "123 Main St",
-              zipcode: "10001"
-            },
-            return_url: returnUrl,
-            cancel_url: cancelUrl,
-            customer: {
-              email: customer_email,
-              name: customer_email.split('@')[0]
-            },
-            metadata: {
-              user_id: user_id,
-              plan: plan,
-              frontend_url: frontendUrl,
-              ref: 'doc_replacer_v1'
-            }
-          })
+          body: JSON.stringify(payload)
         });
 
         const responseText = await dodoResponse.text();
+        console.log('Dodo Response Status:', dodoResponse.status);
+        console.log('Dodo Raw Response:', responseText);
 
         let dodoData;
         try {
           dodoData = JSON.parse(responseText);
         } catch (e) {
-          console.log('Dodo response was not JSON:', responseText);
-          // If it's not JSON, it's likely a text error from the server
           throw new Error(`Dodo API Error (${dodoResponse.status}): ${responseText.substring(0, 200)}`);
         }
 
         if (!dodoResponse.ok) {
-          console.error('Dodo API Error Response:', dodoData);
           throw new Error(dodoData.message || dodoData.error || `HTTP ${dodoResponse.status}`);
         }
 
@@ -576,7 +576,6 @@ export async function registerRoutes(
           });
         }
 
-        console.error('Missing checkout_url in success response:', dodoData);
         throw new Error('No checkout_url in Dodo response');
 
       } catch (apiError) {
