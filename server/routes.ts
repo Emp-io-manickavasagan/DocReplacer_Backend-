@@ -552,7 +552,7 @@ export async function registerRoutes(
       }
 
       // Fallback to direct URL approach if API fails
-      const baseUrl = 'https://test.checkout.dodopayments.com/buy/pdt_0NVxNSCQ9JYoBiK8mVUnI';
+      const baseUrl = 'https://checkout.dodopayments.com/buy/pdt_0NVxNSCQ9JYoBiK8mVUnI';
       const params = new URLSearchParams({
         quantity: '1',
         customer_email: customer_email,
@@ -582,694 +582,135 @@ export async function registerRoutes(
     }
   });
 
-  // === PAYMENT WEBHOOK - FULL SUBSCRIPTION MANAGEMENT ===
+  // === PAYMENT WEBHOOK - AUTOMATIC PRO ACTIVATION ===
   app.post('/api/payment/dodo-webhook', async (req, res) => {
     try {
-      // DEBUG: Log all webhook data to see what Dodo is actually sending
-      console.log('=== DODO WEBHOOK RECEIVED ===');
-      console.log('Timestamp:', new Date().toISOString());
-      console.log('Headers:', JSON.stringify(req.headers, null, 2));
-      console.log('Body:', JSON.stringify(req.body, null, 2));
-      console.log('Raw Body Type:', typeof req.body);
-      console.log('================================');
-      
       const { type, data } = req.body;
 
-      // DEBUG: Log parsed webhook data
-      console.log('📋 Parsed webhook data:');
-      console.log('Event type:', type);
-      console.log('Event data:', JSON.stringify(data, null, 2));
-
-      // Input validation
-      if (!type || !data || typeof type !== 'string') {
-        console.log('❌ Invalid webhook data - missing type or data');
+      if (!type || !data) {
         return res.status(400).json({ error: 'Invalid webhook data' });
       }
 
-      console.log('✅ Webhook data validation passed');
-
-      // Handle subscription activation events
+      // Events that should activate PRO plan
       const activationEvents = [
         'subscription.active',
-        'subscription.created',
+        'subscription.created', 
         'subscription.renewed',
         'subscription.reactivated',
         'payment.completed',
         'payment.succeeded',
-        'checkout.session.completed'
+        'checkout.session.completed',
+        'subscription.updated'
       ];
 
-      // Handle subscription update events (but check if it should activate)
-      const updateEvents = [
-        'subscription.updated',
-        'subscription.plan_changed',
-        'subscription.modified'
-      ];
+      if (activationEvents.includes(type)) {
+        const { subscription_id, customer, status, next_billing_date, expires_at, metadata, amount, recurring_pre_tax_amount } = data;
 
-      // Handle subscription deactivation events
+        // Find user by metadata first, then by email
+        let user;
+        if (metadata?.user_id) {
+          user = await storage.getUser(metadata.user_id);
+        }
+        
+        if (!user && customer?.email) {
+          user = await storage.getUserByEmail(customer.email.toLowerCase().trim());
+        }
+
+        if (!user) {
+          return res.status(404).json({ error: 'User not found' });
+        }
+
+        // For subscription.updated, only activate if status is active
+        if (type === 'subscription.updated' && status !== 'active') {
+          return res.json({ success: true, action: 'no_action_needed' });
+        }
+
+        const subscriptionId = subscription_id || data.id || `dodo_${Date.now()}`;
+        
+        // Check if already processed to avoid duplicates
+        const existingPayment = await storage.getPaymentByPurchaseId(subscriptionId);
+        if (existingPayment && existingPayment.status === 'completed') {
+          // Already processed, but ensure user is PRO
+          await storage.updateUserPlan(user._id, 'PRO');
+          return res.json({ success: true, action: 'already_processed_ensured_pro' });
+        }
+
+        // Create or update payment record
+        if (!existingPayment) {
+          await storage.createPayment({
+            userId: user._id,
+            dodoPurchaseId: subscriptionId,
+            productId: data.product_id || 'pdt_0NVxNSCQ9JYoBiK8mVUnI',
+            amount: recurring_pre_tax_amount || amount || 300,
+            status: 'completed',
+            customerEmail: user.email
+          });
+        }
+
+        // Calculate expiration date
+        const startDate = new Date();
+        let endDate;
+        
+        if (expires_at) {
+          endDate = new Date(expires_at);
+        } else if (next_billing_date) {
+          endDate = new Date(next_billing_date);
+        } else {
+          // Default to 30 days from now
+          endDate = new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
+        }
+
+        // CRITICAL: Update user plan and expiration
+        await storage.updatePaymentStatus(subscriptionId, 'completed', { startDate, endDate });
+        await storage.updateUserPlan(user._id, 'PRO');
+        await storage.updateUserPlanExpiration(user._id, endDate);
+
+        return res.json({
+          success: true,
+          action: 'pro_plan_activated',
+          user_email: user.email,
+          plan: 'PRO',
+          expires: endDate.toISOString(),
+          subscription_id: subscriptionId
+        });
+      }
+
+      // Handle deactivation events
       const deactivationEvents = [
         'subscription.cancelled',
-        'subscription.expired',
+        'subscription.expired', 
         'subscription.failed',
         'subscription.suspended',
         'payment.failed',
         'payment.refunded'
       ];
 
-      // Handle subscription hold/pause events
-      const holdEvents = [
-        'subscription.on_hold',
-        'subscription.paused',
-        'subscription.pending'
-      ];
-
-      // Handle trial events
-      const trialEvents = [
-        'subscription.trial_started',
-        'subscription.trial_ending',
-        'subscription.trial_ended'
-      ];
-
-      if (activationEvents.includes(type)) {
-        console.log('🟢 Processing ACTIVATION event:', type);
-        // ✅ ACTIVATE PRO PLAN
-        const { subscription_id, customer, status, next_billing_date, expires_at, metadata, amount, recurring_pre_tax_amount } = data;
-
-        // Try to identify user first via metadata (most reliable), then email
-        let user;
-        let userEmail = customer?.email;
-
-        // Method 1: Try metadata.user_id
-        if (metadata?.user_id) {
-          user = await storage.getUser(metadata.user_id);
-        }
-
-        // Method 2: Try email if user not found via metadata
-        if (!user && userEmail) {
-          const sanitizedEmail = userEmail.toLowerCase().trim();
-          user = await storage.getUserByEmail(sanitizedEmail);
-        }
-
-        if (!user) {
-          console.error(`[Webhook] User not found. Email: ${userEmail}, UserID: ${metadata?.user_id}`);
-          return res.status(404).json({ error: 'User not found', email: userEmail, user_id: metadata?.user_id });
-        }
-
-        const sanitizedEmail = user.email; // Use the found user's email
-
-        // Create or update payment record
-        const subscriptionId = subscription_id || data.id || `dodo_${Date.now()}`;
-        console.log(`💾 [ACTIVATION] Processing subscription: ${subscriptionId}`);
-        console.log(`💾 [ACTIVATION] User: ${user.email} (${user._id})`);
-        console.log(`💾 [ACTIVATION] Current user plan: ${user.plan}`);
-        
-        let paymentRecord;
-        try {
-          paymentRecord = await storage.getPaymentByPurchaseId(subscriptionId);
-          console.log(`💾 [ACTIVATION] Payment record lookup result: ${paymentRecord ? 'Found' : 'Not found'}`);
-        } catch (error) {
-          console.log(`💥 [ACTIVATION] Error looking up payment record: ${error}`);
-          throw error;
-        }
-
-        if (!paymentRecord) {
-          console.log(`📝 [ACTIVATION] Creating new payment record...`);
-          try {
-            paymentRecord = await storage.createPayment({
-              userId: user._id,
-              dodoPurchaseId: subscriptionId,
-              productId: data.product_id || 'pro_plan',
-              amount: recurring_pre_tax_amount || amount || 300,
-              status: 'completed',
-              customerEmail: sanitizedEmail
-            });
-            console.log(`✅ [ACTIVATION] Payment record created successfully`);
-          } catch (error) {
-            console.log(`💥 [ACTIVATION] CRITICAL ERROR creating payment record: ${error}`);
-            throw error;
-          }
-        } else {
-          console.log(`📋 [ACTIVATION] Payment record already exists`);
-        }
-
-        // Calculate subscription dates
-        const startDate = new Date();
-        let endDate;
-
-        if (expires_at) {
-          endDate = new Date(expires_at);
-          console.log(`📅 [ACTIVATION] Using expires_at: ${endDate.toISOString()}`);
-        } else if (next_billing_date) {
-          endDate = new Date(next_billing_date);
-          console.log(`📅 [ACTIVATION] Using next_billing_date: ${endDate.toISOString()}`);
-        } else {
-          // Default to 30 days from now
-          endDate = new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
-          console.log(`📅 [ACTIVATION] Using default 30 days: ${endDate.toISOString()}`);
-        }
-
-        // Update payment and user records with detailed logging
-        console.log(`🔄 [ACTIVATION] Step 1: Updating payment status...`);
-        try {
-          await storage.updatePaymentStatus(subscriptionId, 'completed', { startDate, endDate });
-          console.log(`✅ [ACTIVATION] Step 1 completed: Payment status updated`);
-        } catch (error) {
-          console.log(`💥 [ACTIVATION] CRITICAL ERROR in step 1 (payment status): ${error}`);
-          throw error;
-        }
-
-        console.log(`🔄 [ACTIVATION] Step 2: Updating user plan to PRO...`);
-        try {
-          await storage.updateUserPlan(user._id, 'PRO');
-          console.log(`✅ [ACTIVATION] Step 2 completed: User plan updated to PRO`);
-        } catch (error) {
-          console.log(`💥 [ACTIVATION] CRITICAL ERROR in step 2 (user plan): ${error}`);
-          throw error;
-        }
-
-        console.log(`🔄 [ACTIVATION] Step 3: Setting plan expiration...`);
-        try {
-          await storage.updateUserPlanExpiration(user._id, endDate);
-          console.log(`✅ [ACTIVATION] Step 3 completed: Plan expiration set to ${endDate.toISOString()}`);
-        } catch (error) {
-          console.log(`💥 [ACTIVATION] CRITICAL ERROR in step 3 (plan expiration): ${error}`);
-          throw error;
-        }
-
-        console.log(`🎉 [ACTIVATION] ALL STEPS COMPLETED! PRO plan activated for ${sanitizedEmail}`);
-
-        // Verify the changes were saved
-        try {
-          const updatedUser = await storage.getUser(user._id);
-          console.log(`🔍 [ACTIVATION] Verification - User plan is now: ${updatedUser?.plan}`);
-          console.log(`🔍 [ACTIVATION] Verification - Plan expires: ${updatedUser?.planExpiresAt}`);
-        } catch (error) {
-          console.log(`⚠️ [ACTIVATION] Could not verify user update: ${error}`);
-        }
-
-        const frontendUrl = metadata?.frontend_url || process.env.FRONTEND_URL || 'https://www.docreplacer.online';
-        const redirectUrl = `${frontendUrl}/app/upload?payment_success=true&subscription_id=${subscriptionId}`;
-
-        res.json({
-          success: true,
-          action: 'plan_activated',
-          redirect_url: redirectUrl,
-          message: `PRO plan activated via ${type}`,
-          subscription_id: subscriptionId,
-          subscription_end_date: endDate.toISOString(),
-          user_email: sanitizedEmail
-        });
-
-        console.log('✅ ACTIVATION SUCCESS - Response sent for:', sanitizedEmail);
-
-      } else if (updateEvents.includes(type)) {
-        console.log('🔄 Processing UPDATE event:', type);
-        // 🔄 UPDATE SUBSCRIPTION (or activate if status is active)
-        const { subscription_id, customer, status, next_billing_date, expires_at, amount, recurring_pre_tax_amount, product_id } = data;
-
-        if (!customer?.email) {
-          return res.status(400).json({ error: 'Missing customer email' });
-        }
-
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!emailRegex.test(customer.email)) {
-          return res.status(400).json({ error: 'Invalid email format' });
-        }
-
-        const sanitizedEmail = customer.email.toLowerCase().trim();
-        let user;
-        
-        // Try to identify user first via metadata (most reliable), then email
-        if (data.metadata?.user_id) {
-          user = await storage.getUser(data.metadata.user_id);
-        }
-        
-        // If user not found by metadata, try to find by email
-        if (!user) {
-          user = await storage.getUserByEmail(sanitizedEmail);
-        }
-        
-        if (!user) {
-          return res.status(404).json({ error: 'User not found', email: sanitizedEmail });
-        }
-
-        // If status is active, treat this as an activation (for Dodo's subscription.updated)
-        if (status === 'active') {
-          console.log('🎯 Status is ACTIVE - treating as activation for:', sanitizedEmail);
-          
-          // Prevent duplicate processing of the same subscription
-          const subscriptionId = subscription_id || data.id || `dodo_${Date.now()}`;
-          console.log(`🔍 Checking for existing subscription: ${subscriptionId}`);
-          
-          let paymentRecord = await storage.getPaymentByPurchaseId(subscriptionId);
-          if (paymentRecord && paymentRecord.status === 'completed') {
-            console.log(`⚠️ Subscription ${subscriptionId} already processed - skipping duplicate`);
-            return res.json({
-              success: true,
-              action: 'already_processed',
-              message: 'Subscription already activated',
-              subscription_id: subscriptionId,
-              user_email: sanitizedEmail
-            });
-          }
-          
-          console.log(`✅ Proceeding with activation for ${subscriptionId}`);
-          
-          try {
-            // Create or update payment record
-            if (!paymentRecord) {
-              console.log(`📝 Creating new payment record for ${sanitizedEmail}`);
-              paymentRecord = await storage.createPayment({
-                userId: user._id,
-                dodoPurchaseId: subscriptionId,
-                productId: product_id || 'pro_plan',
-                amount: recurring_pre_tax_amount || amount || 300,
-                status: 'completed',
-                customerEmail: sanitizedEmail
-              });
-              console.log(`✅ Payment record created`);
-            }
-
-            // Calculate subscription dates
-            const startDate = new Date();
-            let endDate;
-            
-            if (expires_at) {
-              endDate = new Date(expires_at);
-            } else if (next_billing_date) {
-              endDate = new Date(next_billing_date);
-            } else {
-              endDate = new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
-            }
-            
-            console.log(`📅 Subscription period: ${startDate.toISOString()} to ${endDate.toISOString()}`);
-
-            // Update payment and user records
-            console.log(`🔄 Updating payment status...`);
-            await storage.updatePaymentStatus(subscriptionId, 'completed', { startDate, endDate });
-            console.log(`✅ Payment status updated`);
-            
-            console.log(`🔄 Updating user plan to PRO...`);
-            await storage.updateUserPlan(user._id, 'PRO');
-            console.log(`✅ User plan updated to PRO`);
-            
-            console.log(`🔄 Setting plan expiration...`);
-            await storage.updateUserPlanExpiration(user._id, endDate);
-            console.log(`✅ Plan expiration set`);
-            
-            console.log(`🎉 PRO plan activation completed successfully for ${sanitizedEmail}`);
-            
-            res.json({
-              success: true,
-              action: 'plan_activated_via_update',
-              message: `PRO plan activated via ${type} with status=active`,
-              subscription_id: subscriptionId,
-              subscription_end_date: endDate.toISOString(),
-              user_email: sanitizedEmail
-            });
-            
-            console.log('✅ UPDATE->ACTIVATION SUCCESS - Response sent for:', sanitizedEmail);
-            
-          } catch (dbError) {
-            console.log('💥 DATABASE ERROR during activation:', dbError);
-            throw dbError; // Re-throw to be caught by outer catch
-          }
-          
-        } else {
-          console.log('🔄 Regular update - status is:', status, 'for:', sanitizedEmail);
-          // Regular update logic
-          if (subscription_id) {
-            const startDate = new Date();
-            let endDate;
-
-            if (expires_at) {
-              endDate = new Date(expires_at);
-            } else if (next_billing_date) {
-              endDate = new Date(next_billing_date);
-            } else {
-              endDate = new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
-            }
-
-            await storage.updatePaymentStatus(subscription_id, 'completed', { startDate, endDate });
-            await storage.updateUserPlanExpiration(user._id, endDate);
-
-            // Update payment amount if provided
-            if (recurring_pre_tax_amount || amount) {
-              await storage.updatePaymentAmount(subscription_id, recurring_pre_tax_amount || amount);
-            }
-          }
-
-          // Keep PRO plan active if subscription is active or pending
-          if (status === 'pending' || !status) {
-            await storage.updateUserPlan(user._id, 'PRO');
-          }
-
-          res.json({
-            success: true,
-            action: 'subscription_updated',
-            message: `Subscription updated via ${type}`,
-            user_email: sanitizedEmail
-          });
-        }
-
-      } else if (deactivationEvents.includes(type)) {
-        console.log('🔴 Processing DEACTIVATION event:', type);
-        // ❌ DEACTIVATE PRO PLAN
-        const { subscription_id, customer, reason, error_message } = data;
-
-        if (!customer?.email) {
-          return res.status(400).json({ error: 'Missing customer email' });
-        }
-
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!emailRegex.test(customer.email)) {
-          return res.status(400).json({ error: 'Invalid email format' });
-        }
-
-        const sanitizedEmail = customer.email.toLowerCase().trim();
-        const user = await storage.getUserByEmail(sanitizedEmail);
-        if (!user) {
-          return res.status(404).json({ error: 'User not found' });
-        }
-
-        // Update payment status if subscription_id provided
-        if (subscription_id) {
-          const cancelStatus = type.includes('failed') ? 'failed' :
-            type.includes('refunded') ? 'refunded' : 'cancelled';
-
-          await storage.updatePaymentStatus(subscription_id, cancelStatus, {
-            startDate: new Date(),
-            endDate: new Date() // Expire immediately
-          });
-        }
-
-        // Downgrade to FREE plan
-        await storage.updateUserPlan(user._id, 'FREE');
-        await storage.updateUserPlanExpiration(user._id, new Date()); // Expire immediately
-
-        res.json({
-          success: true,
-          action: 'plan_deactivated',
-          message: `PRO plan deactivated via ${type}`,
-          reason: reason || type,
-          error_message: error_message || null,
-          user_email: sanitizedEmail
-        });
-
-      } else if (holdEvents.includes(type)) {
-        // ⏸️ HANDLE SUBSCRIPTION ON HOLD
-        const { subscription_id, customer, next_billing_date, expires_at } = data;
-
-        if (!customer?.email) {
-          return res.status(400).json({ error: 'Missing customer email' });
-        }
-
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!emailRegex.test(customer.email)) {
-          return res.status(400).json({ error: 'Invalid email format' });
-        }
-
-        const sanitizedEmail = customer.email.toLowerCase().trim();
-        const user = await storage.getUserByEmail(sanitizedEmail);
-        if (!user) {
-          return res.status(404).json({ error: 'User not found' });
-        }
-
-        // Update payment status but keep plan active temporarily
-        if (subscription_id) {
-          await storage.updatePaymentStatus(subscription_id, 'on_hold');
-
-          // If there's an expiration date, respect it
-          if (expires_at) {
-            await storage.updateUserPlanExpiration(user._id, new Date(expires_at));
-          } else if (next_billing_date) {
-            await storage.updateUserPlanExpiration(user._id, new Date(next_billing_date));
-          }
-        }
-
-        // Keep PRO plan active during hold period
-        // Plan will expire naturally based on expiration date
-
-        res.json({
-          success: true,
-          action: 'subscription_on_hold',
-          message: `Subscription on hold via ${type}`,
-          user_email: sanitizedEmail
-        });
-
-      } else if (trialEvents.includes(type)) {
-        // 🆓 HANDLE TRIAL EVENTS
-        const { subscription_id, customer, trial_end_date, next_billing_date } = data;
-
-        if (!customer?.email) {
-          return res.status(400).json({ error: 'Missing customer email' });
-        }
-
-        const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-        if (!emailRegex.test(customer.email)) {
-          return res.status(400).json({ error: 'Invalid email format' });
-        }
-
-        const sanitizedEmail = customer.email.toLowerCase().trim();
-        const user = await storage.getUserByEmail(sanitizedEmail);
-        if (!user) {
-          return res.status(404).json({ error: 'User not found' });
-        }
-
-        if (type === 'subscription.trial_started') {
-          // Activate PRO during trial
-          await storage.updateUserPlan(user._id, 'PRO');
-
-          if (trial_end_date) {
-            await storage.updateUserPlanExpiration(user._id, new Date(trial_end_date));
-          }
-
-          if (subscription_id) {
-            await storage.updatePaymentStatus(subscription_id, 'trial');
-          }
-
-        } else if (type === 'subscription.trial_ended') {
-          // Check if user converted to paid subscription
-          if (next_billing_date) {
-            // Trial converted to paid - keep PRO
-            await storage.updateUserPlan(user._id, 'PRO');
-            await storage.updateUserPlanExpiration(user._id, new Date(next_billing_date));
-          } else {
-            // Trial ended without conversion - downgrade to FREE
+      if (deactivationEvents.includes(type)) {
+        const { customer } = data;
+        if (customer?.email) {
+          const user = await storage.getUserByEmail(customer.email.toLowerCase().trim());
+          if (user) {
             await storage.updateUserPlan(user._id, 'FREE');
             await storage.updateUserPlanExpiration(user._id, new Date());
+            return res.json({
+              success: true,
+              action: 'pro_plan_deactivated',
+              user_email: user.email
+            });
           }
         }
-
-        res.json({
-          success: true,
-          action: 'trial_managed',
-          message: `Trial event handled: ${type}`,
-          user_email: sanitizedEmail
-        });
-
-      } else {
-        console.log('❓ UNSUPPORTED event type:', type);
-        // 📝 UNSUPPORTED EVENT TYPE
-        res.json({
-          success: true,
-          action: 'event_logged',
-          message: `Received event: ${type}`,
-          note: 'Event logged but no action taken'
-        });
       }
+
+      return res.json({ success: true, action: 'event_logged' });
+
     } catch (error) {
-      console.log('💥 WEBHOOK ERROR:', error);
-      console.log('Error message:', error instanceof Error ? error.message : 'Unknown error');
-      console.log('Error stack:', error instanceof Error ? error.stack : 'No stack trace');
-      
-      res.status(500).json({
+      return res.status(500).json({
         error: 'Webhook processing failed',
         message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
   });
 
-  // === MANUAL PLAN ACTIVATION (for testing) ===
-  app.post('/api/admin/activate-plan', async (req, res) => {
-    try {
-      const { email } = req.body;
-      
-      if (!email) {
-        return res.status(400).json({ error: 'Email is required' });
-      }
-      
-      const user = await storage.getUserByEmail(email.toLowerCase().trim());
-      if (!user) {
-        return res.status(404).json({ error: 'User not found', email });
-      }
-      
-      // Activate PRO plan
-      await storage.updateUserPlan(user._id, 'PRO');
-      
-      // Set expiration date (30 days from now)
-      const endDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-      await storage.updateUserPlanExpiration(user._id, endDate);
-      
-      res.json({
-        success: true,
-        message: 'PRO plan activated manually',
-        user: {
-          email: user.email,
-          plan: 'PRO',
-          expires: endDate.toISOString()
-        }
-      });
-      
-    } catch (error) {
-      res.status(500).json({ error: 'Failed to activate plan' });
-    }
-  });
-
-  // === CHECK USER STATUS ===
-  app.post('/api/admin/check-user-status', async (req, res) => {
-    try {
-      const { email } = req.body;
-      
-      if (!email) {
-        return res.status(400).json({ error: 'Email is required' });
-      }
-      
-      const user = await storage.getUserByEmail(email.toLowerCase().trim());
-      if (!user) {
-        return res.status(404).json({ error: 'User not found', email });
-      }
-      
-      // Get payment records
-      const payments = await storage.getPaymentByPurchaseId('sub_0NVxXOeanTciQqYf5tREr');
-      
-      res.json({
-        success: true,
-        user: {
-          id: user._id,
-          email: user.email,
-          name: user.name,
-          plan: user.plan,
-          planExpiresAt: user.planExpiresAt,
-          planActivatedAt: user.planActivatedAt,
-          monthlyUsage: user.monthlyUsage,
-          createdAt: user.createdAt
-        },
-        payment_record: payments,
-        current_time: new Date().toISOString()
-      });
-      
-    } catch (error) {
-      res.status(500).json({ 
-        error: 'Failed to check user status',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
-    }
-  });
-
-  // === DEBUG USER STATUS ===
-  app.get('/api/debug/user-status/:email', async (req, res) => {
-    try {
-      const { email } = req.params;
-      
-      if (!email) {
-        return res.status(400).json({ error: 'Email is required' });
-      }
-      
-      const sanitizedEmail = email.toLowerCase().trim();
-      const user = await storage.getUserByEmail(sanitizedEmail);
-      
-      if (!user) {
-        return res.status(404).json({ error: 'User not found', email: sanitizedEmail });
-      }
-      
-      // Get payment records for this user
-      const payments = await storage.getPayments();
-      const userPayments = payments.filter(p => p.customerEmail === sanitizedEmail || p.userId === user._id);
-      
-      res.json({
-        success: true,
-        user: {
-          id: user._id,
-          email: user.email,
-          name: user.name,
-          plan: user.plan,
-          planExpiresAt: user.planExpiresAt,
-          planActivatedAt: user.planActivatedAt,
-          monthlyUsage: user.monthlyUsage,
-          createdAt: user.createdAt,
-          updatedAt: user.updatedAt
-        },
-        payments: userPayments,
-        total_payments: userPayments.length,
-        current_time: new Date().toISOString()
-      });
-      
-    } catch (error) {
-      res.status(500).json({ 
-        error: 'Failed to check user status',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
-    }
-  });
-
-  // === FORCE ACTIVATE PRO ===
-  app.post('/api/debug/force-activate/:email', async (req, res) => {
-    try {
-      const { email } = req.params;
-      
-      if (!email) {
-        return res.status(400).json({ error: 'Email is required' });
-      }
-      
-      const sanitizedEmail = email.toLowerCase().trim();
-      const user = await storage.getUserByEmail(sanitizedEmail);
-      
-      if (!user) {
-        return res.status(404).json({ error: 'User not found', email: sanitizedEmail });
-      }
-      
-      // Force activate PRO plan
-      const endDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
-      
-      await storage.updateUserPlan(user._id, 'PRO');
-      await storage.updateUserPlanExpiration(user._id, endDate);
-      
-      // Create a payment record
-      const subscriptionId = `force_${Date.now()}`;
-      await storage.createPayment({
-        userId: user._id,
-        dodoPurchaseId: subscriptionId,
-        productId: 'pdt_0NVxNSCQ9JYoBiK8mVUnI',
-        amount: 300,
-        status: 'completed',
-        customerEmail: sanitizedEmail
-      });
-      
-      res.json({
-        success: true,
-        message: 'PRO plan force activated',
-        user: {
-          email: user.email,
-          plan: 'PRO',
-          expires: endDate.toISOString()
-        }
-      });
-      
-    } catch (error) {
-      res.status(500).json({ 
-        error: 'Failed to force activate',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
-    }
-  });
-  // === CHECK WEBHOOK LOGS ===
-  app.get('/api/admin/webhook-status', async (req, res) => {
-    res.json({
-      message: 'Check server console for webhook logs',
-      timestamp: new Date().toISOString()
-    });
-  });
   // Get user documents
   app.get('/api/user/documents', authenticateToken, async (req: AuthRequest, res) => {
     try {

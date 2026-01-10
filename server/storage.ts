@@ -74,14 +74,20 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateUserPlan(userId: string, plan: string): Promise<void> {
-    const now = new Date();
-    const expiresAt = plan === 'PRO' ? new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000) : null;
-    
-    await User.findByIdAndUpdate(userId, { 
+    const updates: any = { 
       plan,
-      planActivatedAt: now,
-      planExpiresAt: expiresAt
-    });
+      planActivatedAt: new Date()
+    };
+
+    // Only set default expiration if switching to PRO and no expiration exists
+    if (plan === 'FREE') {
+      updates.planExpiresAt = null;
+    }
+    
+    const result = await User.findByIdAndUpdate(userId, updates, { new: true });
+    if (!result) {
+      throw new Error(`Failed to update user plan: ${userId}`);
+    }
   }
 
   async updatePlanActivationDate(userId: string, date: Date): Promise<void> {
@@ -135,8 +141,20 @@ export class DatabaseStorage implements IStorage {
   }
 
   async createPayment(payment: { userId: string; dodoPurchaseId: string; productId: string; amount: number; status: string; customerEmail?: string }): Promise<PaymentType> {
-    const p = new Payment(payment);
-    return await p.save();
+    try {
+      const p = new Payment(payment);
+      const result = await p.save();
+      return result;
+    } catch (error) {
+      if (error instanceof Error && error.message.includes('duplicate key')) {
+        // Payment already exists, return existing one
+        const existing = await Payment.findOne({ dodoPurchaseId: payment.dodoPurchaseId });
+        if (existing) {
+          return existing;
+        }
+      }
+      throw error;
+    }
   }
 
   async updatePaymentStatus(dodoPurchaseId: string, status: string, subscriptionData?: { startDate: Date; endDate: Date }): Promise<void> {
@@ -145,7 +163,10 @@ export class DatabaseStorage implements IStorage {
       updates.subscriptionStartDate = subscriptionData.startDate;
       updates.subscriptionEndDate = subscriptionData.endDate;
     }
-    await Payment.findOneAndUpdate({ dodoPurchaseId }, updates);
+    const result = await Payment.findOneAndUpdate({ dodoPurchaseId }, updates, { new: true });
+    if (!result) {
+      throw new Error(`Payment not found for update: ${dodoPurchaseId}`);
+    }
   }
 
   async updatePaymentAmount(dodoPurchaseId: string, amount: number): Promise<void> {
@@ -153,7 +174,10 @@ export class DatabaseStorage implements IStorage {
   }
 
   async updateUserPlanExpiration(userId: string, expirationDate: Date): Promise<void> {
-    await User.findByIdAndUpdate(userId, { planExpiresAt: expirationDate });
+    const result = await User.findByIdAndUpdate(userId, { planExpiresAt: expirationDate }, { new: true });
+    if (!result) {
+      throw new Error(`Failed to update user plan expiration: ${userId}`);
+    }
   }
 
   async getPaymentByPurchaseId(dodoPurchaseId: string): Promise<PaymentType | null> {
