@@ -532,6 +532,10 @@ export async function registerRoutes(
       const frontendUrl = process.env.FRONTEND_URL || 'https://www.docreplacer.online';
       const returnUrl = `${frontendUrl}/app/upload?payment_success=true`;
 
+      // Add both redirect_url and return_url for maximum compatibility with Dodo static links
+      url.searchParams.set('redirect_url', returnUrl);
+      url.searchParams.set('return_url', returnUrl);
+
       return res.json({
         checkout_url: url.toString(),
         return_url: returnUrl
@@ -545,7 +549,10 @@ export async function registerRoutes(
   // Cancel subscription
   app.post('/api/user/cancel-subscription', authenticateToken, async (req: AuthRequest, res) => {
     try {
-      if (req.user!.plan !== 'PRO') {
+      // Always get fresh user data from DB for plan checks
+      const user = await storage.getUser(req.user!.id);
+
+      if (!user || user.plan !== 'PRO') {
         return res.status(400).json({ error: 'User is not on a PRO plan' });
       }
 
