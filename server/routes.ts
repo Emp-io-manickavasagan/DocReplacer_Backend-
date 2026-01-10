@@ -366,6 +366,7 @@ export async function registerRoutes(
       plan: user.plan,
       monthlyUsage: user.monthlyUsage || 0,
       planExpiresAt: user.planExpiresAt,
+      cancelAtPeriodEnd: user.cancelAtPeriodEnd || false,
       subscription: null
     });
   });
@@ -558,10 +559,6 @@ export async function registerRoutes(
 
   // Dodo webhook handler
   app.post('/api/payment/dodo-webhook', async (req, res) => {
-    console.log('--- DODO WEBHOOK RECEIVED ---');
-    console.log('Type:', req.body?.type);
-    console.log('Full Payload Data:', JSON.stringify(req.body?.data, null, 2));
-
     try {
       const { type, data } = req.body;
 
@@ -805,7 +802,8 @@ export async function registerRoutes(
         plan: user.plan,
         monthlyUsage: user.monthlyUsage,
         createdAt: user.createdAt,
-        planExpiresAt: user.planExpiresAt
+        planExpiresAt: user.planExpiresAt,
+        cancelAtPeriodEnd: user.cancelAtPeriodEnd || false
       }));
 
       res.json(sanitizedUsers);
