@@ -608,21 +608,24 @@ export async function registerRoutes(
 
         const subscriptionId = subscription_id || data.id || `dodo_${Date.now()}`;
 
-        const existingPayment = await storage.getPaymentByPurchaseId(subscriptionId);
-        if (existingPayment && existingPayment.status === 'completed') {
-          await storage.updateUserPlan(user._id, 'PRO');
-          return res.json({ success: true, action: 'already_processed' });
-        }
-
-        if (!existingPayment) {
-          await storage.createPayment({
-            userId: user._id,
-            dodoPurchaseId: subscriptionId,
-            productId: data.product_id || process.env.DODO_PRODUCT_ID || 'pdt_0NVxNSCQ9JYoBiK8mVUnI',
-            amount: recurring_pre_tax_amount || amount || 300,
-            status: 'completed',
-            customerEmail: user.email
-          });
+        // Create or get payment record
+        try {
+          const existingPayment = await storage.getPaymentByPurchaseId(subscriptionId);
+          if (!existingPayment) {
+            await storage.createPayment({
+              userId: user._id,
+              dodoPurchaseId: subscriptionId,
+              productId: data.product_id || process.env.DODO_PRODUCT_ID || 'pdt_0NVxNSCQ9JYoBiK8mVUnI',
+              amount: recurring_pre_tax_amount || amount || 300,
+              status: 'completed',
+              customerEmail: user.email
+            });
+          }
+        } catch (paymentError: any) {
+          // If it's a duplicate key error, we can ignore it as the record already exists
+          if (paymentError.code !== 11000) {
+            console.error('Non-duplicate payment creation error:', paymentError);
+          }
         }
 
         const startDate = new Date();
@@ -636,9 +639,20 @@ export async function registerRoutes(
           endDate = new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
         }
 
-        await storage.updatePaymentStatus(subscriptionId, 'completed', { startDate, endDate });
-        await storage.updateUserPlan(user._id, 'PRO');
-        await storage.updateUserPlanExpiration(user._id, endDate);
+        // Keep activation logic robust - try each step
+        try {
+          await storage.updatePaymentStatus(subscriptionId, 'completed', { startDate, endDate });
+        } catch (e) {
+          console.warn('Status update warning (item likely already active):', e instanceof Error ? e.message : 'Unknown');
+        }
+
+        try {
+          await storage.updateUserPlan(user._id, 'PRO');
+          await storage.updateUserPlanExpiration(user._id, endDate);
+        } catch (e) {
+          console.error('Plan activation error:', e);
+          throw e; // This is a real failure
+        }
 
         return res.json({
           success: true,
@@ -663,6 +677,17 @@ export async function registerRoutes(
         if (customer?.email) {
           const user = await storage.getUserByEmail(customer.email.toLowerCase().trim());
           if (user) {
+            // Respect scheduled cancellation
+            if (type === 'subscription.cancelled') {
+              await storage.cancelSubscription(user._id);
+              return res.json({
+                success: true,
+                action: 'pro_plan_cancellation_scheduled',
+                user_email: user.email
+              });
+            }
+
+            // For other failure/expiration events, downgrade immediately
             await storage.updateUserPlan(user._id, 'FREE');
             await storage.updateUserPlanExpiration(user._id, new Date());
             return res.json({
