@@ -559,6 +559,8 @@ export async function registerRoutes(
   app.post('/api/payment/dodo-webhook', async (req, res) => {
     console.log('--- DODO WEBHOOK RECEIVED ---');
     console.log('Type:', req.body?.type);
+    console.log('Full Payload Data:', JSON.stringify(req.body?.data, null, 2));
+
     try {
       const { type, data } = req.body;
 
@@ -580,6 +582,9 @@ export async function registerRoutes(
       if (activationEvents.includes(type)) {
         const { subscription_id, customer, status, next_billing_date, expires_at, metadata, amount, recurring_pre_tax_amount } = data;
 
+        console.log('Extracted Metadata:', metadata);
+        console.log('Extracted Customer:', customer);
+
         let safeMetadata = metadata;
         if (typeof metadata === 'string') {
           try {
@@ -590,7 +595,10 @@ export async function registerRoutes(
         }
 
         let user;
-        const userId = safeMetadata?.user_id || safeMetadata?.['metadata[user_id]'] || safeMetadata?.userId;
+        const userId = safeMetadata?.user_id || safeMetadata?.['metadata[user_id]'] || safeMetadata?.userId || data?.metadata?.user_id;
+
+        console.log('Resolved UserId:', userId);
+        console.log('Resolved Customer Email:', customer?.email);
 
         if (userId) {
           user = await storage.getUser(userId);
@@ -601,9 +609,11 @@ export async function registerRoutes(
         }
 
         if (!user) {
-          console.error('User not found for payment:', { userId, email: customer?.email });
-          return res.status(404).json({ error: 'User not found' });
+          console.error('USER NOT FOUND IN DB for payment:', { userId, email: customer?.email });
+          return res.status(404).json({ error: 'User not found in database' });
         }
+
+        console.log('USER FOUND:', user.email, 'Plan:', user.plan);
 
         if (type === 'subscription.updated' && status !== 'active') {
           return res.json({ success: true, action: 'no_action_needed' });
