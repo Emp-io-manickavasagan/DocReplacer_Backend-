@@ -358,6 +358,10 @@ export async function registerRoutes(
     const user = await storage.getUser(req.user!.id);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
 
+    console.log('--- API ME CALLED ---');
+    console.log('User ID from Token:', req.user!.id);
+    console.log('User in DB:', { id: user._id, email: user.email, plan: user.plan });
+
     res.json({
       id: user._id,
       email: user.email,
@@ -605,7 +609,14 @@ export async function registerRoutes(
         }
 
         if (!user && customer?.email) {
-          user = await storage.getUserByEmail(customer.email.toLowerCase().trim());
+          const email = customer.email.toLowerCase().trim();
+          const usersWithEmail = await User.find({ email });
+          console.log(`Checking for duplicates for ${email}: Found ${usersWithEmail.length} records`);
+          if (usersWithEmail.length > 1) {
+            console.warn('CRITICAL: Duplicate users found for email:', email);
+            usersWithEmail.forEach(u => console.log(` - ID: ${u._id}, Plan: ${u.plan}, Role: ${u.role}`));
+          }
+          user = await storage.getUserByEmail(email);
         }
 
         if (!user) {
@@ -613,7 +624,7 @@ export async function registerRoutes(
           return res.status(404).json({ error: 'User not found in database' });
         }
 
-        console.log('USER FOUND:', user.email, 'Plan:', user.plan);
+        console.log('USER FOUND BY WEBHOOK:', { id: user._id, email: user.email, plan: user.plan });
 
         if (type === 'subscription.updated' && status !== 'active') {
           return res.json({ success: true, action: 'no_action_needed' });
