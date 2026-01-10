@@ -594,7 +594,7 @@ export async function registerRoutes(
       // Events that should activate PRO plan
       const activationEvents = [
         'subscription.active',
-        'subscription.created', 
+        'subscription.created',
         'subscription.renewed',
         'subscription.reactivated',
         'payment.completed',
@@ -607,11 +607,24 @@ export async function registerRoutes(
         const { subscription_id, customer, status, next_billing_date, expires_at, metadata, amount, recurring_pre_tax_amount } = data;
 
         // Find user by metadata first, then by email
-        let user;
-        if (metadata?.user_id) {
-          user = await storage.getUser(metadata.user_id);
+        // Parse metadata if it's a string
+        let safeMetadata = metadata;
+        if (typeof metadata === 'string') {
+          try {
+            safeMetadata = JSON.parse(metadata);
+          } catch (e) {
+            safeMetadata = {};
+          }
         }
-        
+
+        // Find user by metadata first (try multiple key formats), then by email
+        let user;
+        const userId = safeMetadata?.user_id || safeMetadata?.['metadata[user_id]'] || safeMetadata?.userId;
+
+        if (userId) {
+          user = await storage.getUser(userId);
+        }
+
         if (!user && customer?.email) {
           user = await storage.getUserByEmail(customer.email.toLowerCase().trim());
         }
@@ -626,7 +639,7 @@ export async function registerRoutes(
         }
 
         const subscriptionId = subscription_id || data.id || `dodo_${Date.now()}`;
-        
+
         // Check if already processed to avoid duplicates
         const existingPayment = await storage.getPaymentByPurchaseId(subscriptionId);
         if (existingPayment && existingPayment.status === 'completed') {
@@ -650,7 +663,7 @@ export async function registerRoutes(
         // Calculate expiration date
         const startDate = new Date();
         let endDate;
-        
+
         if (expires_at) {
           endDate = new Date(expires_at);
         } else if (next_billing_date) {
@@ -678,7 +691,7 @@ export async function registerRoutes(
       // Handle deactivation events
       const deactivationEvents = [
         'subscription.cancelled',
-        'subscription.expired', 
+        'subscription.expired',
         'subscription.failed',
         'subscription.suspended',
         'payment.failed',
