@@ -515,27 +515,28 @@ export async function registerRoutes(
         return res.status(403).json({ error: 'Unauthorized' });
       }
 
-      // Use direct payment link from environment
       const proPlanLink = process.env.DODO_PRO_PLAN_LINK;
-
       if (!proPlanLink) {
-        return res.status(500).json({ error: 'Payment service not configured. Please contact support.' });
+        return res.status(500).json({ error: 'Payment service not configured' });
       }
+
+      // Append metadata to the direct link so the webhook can identify the user
+      // Dodo supports passing these as query parameters
+      const url = new URL(proPlanLink);
+      url.searchParams.set('quantity', '1');
+      url.searchParams.set('customer_email', customer_email);
+      url.searchParams.set('metadata[user_id]', user_id);
 
       const frontendUrl = process.env.FRONTEND_URL || 'https://www.docreplacer.online';
       const returnUrl = `${frontendUrl}/app/upload?payment_success=true`;
 
       return res.json({
-        checkout_url: proPlanLink,
+        checkout_url: url.toString(),
         return_url: returnUrl
       });
-
     } catch (error) {
       console.error('Payment creation failed:', error);
-      return res.status(500).json({
-        error: 'Payment service unavailable',
-        details: error instanceof Error ? error.message : 'Unknown error'
-      });
+      res.status(500).json({ error: 'Payment service unavailable' });
     }
   });
 
@@ -556,6 +557,8 @@ export async function registerRoutes(
 
   // Dodo webhook handler
   app.post('/api/payment/dodo-webhook', async (req, res) => {
+    console.log('--- DODO WEBHOOK RECEIVED ---');
+    console.log('Type:', req.body?.type);
     try {
       const { type, data } = req.body;
 
