@@ -11,6 +11,7 @@ export interface IStorage {
   updateUserPlan(userId: string, plan: string): Promise<void>;
   updatePlanActivationDate(userId: string, date: Date): Promise<void>;
   updateUserRole(userId: string, role: string): Promise<void>;
+  cancelSubscription(userId: string): Promise<void>;
   deleteUser(userId: string): Promise<void>;
   updateUserPassword(email: string, hashedPassword: string): Promise<void>;
   updateUserProfile(userId: string, profile: { name: string }): Promise<void>;
@@ -44,7 +45,8 @@ export class DatabaseStorage implements IStorage {
       {
         plan: 'FREE',
         planExpiresAt: null,
-        monthlyUsage: 0
+        monthlyUsage: 0,
+        cancelAtPeriodEnd: false
       }
     );
   }
@@ -65,11 +67,12 @@ export class DatabaseStorage implements IStorage {
   async updateUserPlan(userId: string, plan: string): Promise<void> {
     const updates: any = {
       plan,
-      planActivatedAt: new Date()
+      cancelAtPeriodEnd: false
     };
 
-    // Only set default expiration if switching to PRO and no expiration exists
-    if (plan === 'FREE') {
+    if (plan === 'PRO') {
+      updates.planActivatedAt = new Date();
+    } else if (plan === 'FREE') {
       updates.planExpiresAt = null;
     }
 
@@ -85,6 +88,10 @@ export class DatabaseStorage implements IStorage {
 
   async updateUserRole(userId: string, role: string): Promise<void> {
     await User.findByIdAndUpdate(userId, { role });
+  }
+
+  async cancelSubscription(userId: string): Promise<void> {
+    await User.findByIdAndUpdate(userId, { cancelAtPeriodEnd: true });
   }
 
   async deleteUser(userId: string): Promise<void> {

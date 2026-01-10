@@ -12,8 +12,8 @@ const userSchema = new mongoose.Schema({
   planExpiresAt: { type: Date },
   monthlyUsage: { type: Number, default: 0 },
   lastUsageReset: { type: Date, default: Date.now },
-  isVerified: { type: Boolean, default: false },
   createdAt: { type: Date, default: Date.now },
+  cancelAtPeriodEnd: { type: Boolean, default: false },
 });
 
 // Document Schema
@@ -81,8 +81,8 @@ export type UserType = {
   planExpiresAt?: Date;
   monthlyUsage: number;
   lastUsageReset: Date;
-  isVerified?: boolean;
   createdAt: Date;
+  cancelAtPeriodEnd: boolean;
 };
 
 export type DocumentType = {

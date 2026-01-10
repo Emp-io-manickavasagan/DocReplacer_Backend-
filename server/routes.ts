@@ -539,6 +539,21 @@ export async function registerRoutes(
     }
   });
 
+  // Cancel subscription
+  app.post('/api/user/cancel-subscription', authenticateToken, async (req: AuthRequest, res) => {
+    try {
+      if (req.user!.plan !== 'PRO') {
+        return res.status(400).json({ error: 'User is not on a PRO plan' });
+      }
+
+      await storage.cancelSubscription(req.user!.id);
+      res.json({ success: true, message: 'Subscription cancelled successfully. You will remain PRO until your period ends.' });
+    } catch (error) {
+      console.error('Subscription cancellation failed:', error);
+      res.status(500).json({ error: 'Failed to cancel subscription' });
+    }
+  });
+
   // Dodo webhook handler
   app.post('/api/payment/dodo-webhook', async (req, res) => {
     try {
