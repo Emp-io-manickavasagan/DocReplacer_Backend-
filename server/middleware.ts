@@ -50,12 +50,12 @@ export const checkPlanLimit = async (req: AuthRequest, res: Response, next: Next
   const now = new Date();
   const planActivatedAt = user.planActivatedAt || user.createdAt;
   const daysSincePlanActivation = Math.floor((now.getTime() - planActivatedAt.getTime()) / (1000 * 60 * 60 * 24));
-  
+
   // Check if 30 days have passed since plan activation
   if (daysSincePlanActivation >= 30) {
     // Reset usage and update plan activation date
     await storage.resetMonthlyUsage(user._id);
-    
+
     // If PRO plan, downgrade to FREE after 30 days (subscription expired)
     if (user.plan === 'PRO') {
       await storage.updateUserPlan(user._id, 'FREE');
@@ -64,7 +64,7 @@ export const checkPlanLimit = async (req: AuthRequest, res: Response, next: Next
       // For FREE users, just reset the cycle
       await storage.updatePlanActivationDate(user._id, now);
     }
-    
+
     // Refresh user data
     const updatedUser = await storage.getUser(req.user.id);
     if (updatedUser) {
@@ -73,11 +73,16 @@ export const checkPlanLimit = async (req: AuthRequest, res: Response, next: Next
     }
   }
 
+  // Check for VIP role - VIPs have unlimited access and no time limits
+  if (user.role === 'VIP') {
+    return next();
+  }
+
   const limits = {
     'FREE': 3,
     'PRO': Infinity // Unlimited for PRO users
   };
-  
+
   const limit = limits[user.plan as keyof typeof limits] || 0;
 
   if (user.monthlyUsage >= limit) {

@@ -875,11 +875,37 @@ export async function registerRoutes(
     }
   });
 
+  // Admin toggle VIP status
+  app.put('/api/admin/user/:id/toggle-vip', authenticateToken, authorizeRole(['ADMIN']), async (req: AuthRequest, res) => {
+    const userId = req.params.id;
+    const { isVip } = req.body;
+
+    // Validate userId format (MongoDB ObjectId)
+    if (!/^[0-9a-fA-F]{24}$/.test(userId)) {
+      return res.status(400).json({ error: 'Invalid user ID' });
+    }
+
+    try {
+      const user = await storage.getUser(userId);
+      if (!user) {
+        return res.status(404).json({ error: 'User not found' });
+      }
+
+      await storage.updateUserRole(userId, isVip ? 'VIP' : 'USER');
+      res.json({ success: true, role: isVip ? 'VIP' : 'USER' });
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to update VIP status' });
+    }
+  });
+
+  // Keep this for backward compatibility or for specific admin actions, 
+  // but remove Pro from allowed plans if we want to force VIP for manual gifting.
   app.put(api.admin.updatePlan.path, authenticateToken, authorizeRole(['ADMIN']), async (req: AuthRequest, res) => {
     const { plan } = req.body;
     const userId = req.params.id;
 
-    // Validate plan
+    // Validate plan - only allow FREE if they want to downgrade, 
+    // Manual PRO is discouraged in favor of VIP gifting.
     if (!plan || !['FREE', 'PRO'].includes(plan)) {
       return res.status(400).json({ error: 'Invalid plan type' });
     }
