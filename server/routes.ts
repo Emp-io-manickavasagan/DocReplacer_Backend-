@@ -509,10 +509,13 @@ export async function registerRoutes(
       const apiKey = process.env.DODO_API_KEY || '';
       console.log(`Using Dodo API Key: ${apiKey.substring(0, 8)}... (Length: ${apiKey.length})`);
 
-      // Use the standard test endpoint (no /v1)
-      const dodoEndpoint = 'https://test.dodopayments.com/checkouts';
+      // Determine endpoint based on key prefix
+      const isTestKey = apiKey.startsWith('test_');
+      const dodoEndpoint = isTestKey
+        ? 'https://test.dodopayments.com/checkouts'
+        : 'https://live.dodopayments.com/checkouts';
 
-      console.log(`Using Dodo Endpoint: ${dodoEndpoint}`);
+      console.log(`Using Dodo Endpoint: ${dodoEndpoint} (Mode: ${isTestKey ? 'TEST' : 'LIVE'})`);
 
       const payload = {
         product_cart: [{
