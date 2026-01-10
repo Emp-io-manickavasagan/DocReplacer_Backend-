@@ -9,7 +9,7 @@ import crypto from "crypto";
 import { docxService, fileBufferStore, paragraphMappings, paragraphStyles, documentTimestamps, cleanupExpiredDocuments } from "./docx.service";
 import { authenticateToken, authorizeRole, checkPlanLimit, generateToken, type AuthRequest } from "./middleware";
 import { sendOTP, generateOTP } from "./email.service";
-import { OTP, Payment, User } from "./models";
+import { OTP, User } from "./models";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -358,9 +358,6 @@ export async function registerRoutes(
     const user = await storage.getUser(req.user!.id);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
 
-    // Get subscription details
-    const subscription = await storage.getUserSubscription(req.user!.id);
-
     res.json({
       id: user._id,
       email: user.email,
@@ -369,12 +366,7 @@ export async function registerRoutes(
       plan: user.plan,
       monthlyUsage: user.monthlyUsage || 0,
       planExpiresAt: user.planExpiresAt,
-      subscription: subscription ? {
-        purchaseId: subscription.dodoPurchaseId,
-        startDate: subscription.subscriptionStartDate,
-        endDate: subscription.subscriptionEndDate,
-        amount: subscription.amount
-      } : null
+      subscription: null
     });
   });
 
@@ -477,262 +469,6 @@ export async function registerRoutes(
       res.send(newBuffer);
     } catch (err) {
       res.status(500).json({ message: "Failed to export DOCX" });
-    }
-  });
-
-  // === PAYMENT CHECKOUT SESSION ===
-  app.post('/api/payment/create-checkout-session', authenticateToken, async (req: AuthRequest, res) => {
-    try {
-      const { user_id, plan, customer_email } = req.body;
-
-      // Validate input
-      if (!user_id || !plan || !customer_email) {
-        return res.status(400).json({ error: 'Missing required fields' });
-      }
-
-      // Ensure user can only create session for themselves
-      if (req.user!.id !== user_id) {
-        return res.status(403).json({ error: 'Unauthorized' });
-      }
-
-      // Validate email format
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(customer_email)) {
-        return res.status(400).json({ error: 'Invalid email format' });
-      }
-
-      const frontendUrl = process.env.FRONTEND_URL || 'https://www.docreplacer.online';
-      const returnUrl = `${frontendUrl}/app/upload?payment_success=true`;
-      const cancelUrl = `${frontendUrl}/pricing?cancelled=true`;
-
-      // Log key status (safe version)
-      const apiKey = process.env.DODO_API_KEY || '';
-      console.log(`Using Dodo API Key: ${apiKey.substring(0, 8)}... (Length: ${apiKey.length})`);
-
-      // Determine endpoint based on key prefix
-      const isTestKey = apiKey.startsWith('test_');
-      const dodoEndpoint = isTestKey
-        ? 'https://test.dodopayments.com/checkouts'
-        : 'https://live.dodopayments.com/checkouts';
-
-      console.log(`Using Dodo Endpoint: ${dodoEndpoint} (Mode: ${isTestKey ? 'TEST' : 'LIVE'})`);
-
-      const payload = {
-        product_cart: [{
-          product_id: 'pdt_0NVxNSCQ9JYoBiK8mVUnI',
-          quantity: 1
-        }],
-        billing: {
-          city: "New York",
-          country: "US",
-          state: "NY",
-          street: "123 Main St",
-          zipcode: "10001"
-        },
-        return_url: returnUrl,
-        cancel_url: cancelUrl,
-        customer: {
-          email: customer_email,
-          name: customer_email.split('@')[0]
-        },
-        metadata: {
-          user_id: user_id,
-          plan: plan,
-          frontend_url: frontendUrl,
-          ref: 'doc_replacer_v1'
-        }
-      };
-
-      console.log('Dodo Request Payload:', JSON.stringify(payload, null, 2));
-
-      // Try to create proper Dodo checkout session via API
-      try {
-        const dodoResponse = await fetch(dodoEndpoint, {
-          method: 'POST',
-          headers: {
-            'Authorization': `Bearer ${apiKey}`,
-            'Content-Type': 'application/json'
-          },
-          body: JSON.stringify(payload)
-        });
-
-        const responseText = await dodoResponse.text();
-        console.log('Dodo Response Status:', dodoResponse.status);
-        console.log('Dodo Raw Response:', responseText);
-
-        let dodoData;
-        try {
-          dodoData = JSON.parse(responseText);
-        } catch (e) {
-          throw new Error(`Dodo API Error (${dodoResponse.status}): ${responseText.substring(0, 200)}`);
-        }
-
-        if (!dodoResponse.ok) {
-          throw new Error(dodoData.message || dodoData.error || `HTTP ${dodoResponse.status}`);
-        }
-
-        if (dodoData.checkout_url) {
-          return res.json({
-            checkout_url: dodoData.checkout_url,
-            return_url: returnUrl,
-            method: 'api'
-          });
-        }
-
-        throw new Error('No checkout_url in Dodo response');
-
-      } catch (apiError) {
-        console.error('Payment creation failed:', apiError);
-        return res.status(500).json({
-          error: 'Payment service unavailable',
-          details: apiError instanceof Error ? apiError.message : 'Unknown error'
-        });
-      }
-    } catch (error) {
-      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-      res.status(500).json({ error: 'Internal server error', details: errorMessage });
-    }
-  });
-
-  // === PAYMENT WEBHOOK - AUTOMATIC PRO ACTIVATION ===
-  app.post('/api/payment/dodo-webhook', async (req, res) => {
-    try {
-      const { type, data } = req.body;
-
-      if (!type || !data) {
-        return res.status(400).json({ error: 'Invalid webhook data' });
-      }
-
-      // Events that should activate PRO plan
-      const activationEvents = [
-        'subscription.active',
-        'subscription.created',
-        'subscription.renewed',
-        'subscription.reactivated',
-        'payment.completed',
-        'payment.succeeded',
-        'checkout.session.completed',
-        'subscription.updated'
-      ];
-
-      if (activationEvents.includes(type)) {
-        const { subscription_id, customer, status, next_billing_date, expires_at, metadata, amount, recurring_pre_tax_amount } = data;
-
-        // Find user by metadata first, then by email
-        // Parse metadata if it's a string
-        let safeMetadata = metadata;
-        if (typeof metadata === 'string') {
-          try {
-            safeMetadata = JSON.parse(metadata);
-          } catch (e) {
-            safeMetadata = {};
-          }
-        }
-
-        // Find user by metadata first (try multiple key formats), then by email
-        let user;
-        const userId = safeMetadata?.user_id || safeMetadata?.['metadata[user_id]'] || safeMetadata?.userId;
-
-        if (userId) {
-          user = await storage.getUser(userId);
-        }
-
-        if (!user && customer?.email) {
-          user = await storage.getUserByEmail(customer.email.toLowerCase().trim());
-        }
-
-        if (!user) {
-          return res.status(404).json({ error: 'User not found' });
-        }
-
-        // For subscription.updated, only activate if status is active
-        if (type === 'subscription.updated' && status !== 'active') {
-          return res.json({ success: true, action: 'no_action_needed' });
-        }
-
-        const subscriptionId = subscription_id || data.id || `dodo_${Date.now()}`;
-
-        // Check if already processed to avoid duplicates
-        const existingPayment = await storage.getPaymentByPurchaseId(subscriptionId);
-        if (existingPayment && existingPayment.status === 'completed') {
-          // Already processed, but ensure user is PRO
-          await storage.updateUserPlan(user._id, 'PRO');
-          return res.json({ success: true, action: 'already_processed_ensured_pro' });
-        }
-
-        // Create or update payment record
-        if (!existingPayment) {
-          await storage.createPayment({
-            userId: user._id,
-            dodoPurchaseId: subscriptionId,
-            productId: data.product_id || 'pdt_0NVxNSCQ9JYoBiK8mVUnI',
-            amount: recurring_pre_tax_amount || amount || 300,
-            status: 'completed',
-            customerEmail: user.email
-          });
-        }
-
-        // Calculate expiration date
-        const startDate = new Date();
-        let endDate;
-
-        if (expires_at) {
-          endDate = new Date(expires_at);
-        } else if (next_billing_date) {
-          endDate = new Date(next_billing_date);
-        } else {
-          // Default to 30 days from now
-          endDate = new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
-        }
-
-        // CRITICAL: Update user plan and expiration
-        await storage.updatePaymentStatus(subscriptionId, 'completed', { startDate, endDate });
-        await storage.updateUserPlan(user._id, 'PRO');
-        await storage.updateUserPlanExpiration(user._id, endDate);
-
-        return res.json({
-          success: true,
-          action: 'pro_plan_activated',
-          user_email: user.email,
-          plan: 'PRO',
-          expires: endDate.toISOString(),
-          subscription_id: subscriptionId
-        });
-      }
-
-      // Handle deactivation events
-      const deactivationEvents = [
-        'subscription.cancelled',
-        'subscription.expired',
-        'subscription.failed',
-        'subscription.suspended',
-        'payment.failed',
-        'payment.refunded'
-      ];
-
-      if (deactivationEvents.includes(type)) {
-        const { customer } = data;
-        if (customer?.email) {
-          const user = await storage.getUserByEmail(customer.email.toLowerCase().trim());
-          if (user) {
-            await storage.updateUserPlan(user._id, 'FREE');
-            await storage.updateUserPlanExpiration(user._id, new Date());
-            return res.json({
-              success: true,
-              action: 'pro_plan_deactivated',
-              user_email: user.email
-            });
-          }
-        }
-      }
-
-      return res.json({ success: true, action: 'event_logged' });
-
-    } catch (error) {
-      return res.status(500).json({
-        error: 'Webhook processing failed',
-        message: error instanceof Error ? error.message : 'Unknown error'
-      });
     }
   });
 

@@ -8,7 +8,7 @@ import rateLimit from "express-rate-limit";
 
 // Validate required environment variables
 const requiredEnvVars = ['DATABASE_URL', 'JWT_SECRET'];
-const optionalEnvVars = ['RESEND_API_KEY', 'DODO_API_KEY', 'FRONTEND_URL'];
+const optionalEnvVars = ['RESEND_API_KEY', 'FRONTEND_URL'];
 
 for (const envVar of requiredEnvVars) {
   if (!process.env[envVar]) {
@@ -61,38 +61,38 @@ app.use('/api/auth', authLimiter);
 app.use('/api', limiter);
 
 app.use((req, res, next) => {
-  const allowedOrigins = process.env.NODE_ENV === 'production' 
+  const allowedOrigins = process.env.NODE_ENV === 'production'
     ? [
-        'https://docreplacer.vercel.app', 
-        'https://docreplacer-frontend.onrender.com', 
-        'https://docreplacer.netlify.app',
-        'https://www.docreplacer.online',
-        'https://docreplacer.online'
-      ]
+      'https://docreplacer.vercel.app',
+      'https://docreplacer-frontend.onrender.com',
+      'https://docreplacer.netlify.app',
+      'https://www.docreplacer.online',
+      'https://docreplacer.online'
+    ]
     : [
-        'https://www.docreplacer.online',
-        'https://docreplacer.online'
-      ];
-  
+      'https://www.docreplacer.online',
+      'https://docreplacer.online'
+    ];
+
   const origin = req.headers.origin;
-  
+
   // Allow origins based on environment
   if (allowedOrigins.includes(origin)) {
     res.header('Access-Control-Allow-Origin', origin);
   } else {
     res.header('Access-Control-Allow-Origin', 'https://www.docreplacer.online');
   }
-  
+
   res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS');
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Content-Length, X-Requested-With');
   res.header('Access-Control-Allow-Credentials', 'true');
-  
+
   // Security headers
   res.header('X-Content-Type-Options', 'nosniff');
   res.header('X-Frame-Options', 'DENY');
   res.header('X-XSS-Protection', '1; mode=block');
   res.header('Referrer-Policy', 'strict-origin-when-cross-origin');
-  
+
   if (req.method === 'OPTIONS') {
     res.sendStatus(200);
   } else {
@@ -159,7 +159,7 @@ app.use((req, res, next) => {
   try {
     // Connect to MongoDB
     await connectDB();
-    
+
     await registerRoutes(httpServer, app);
 
     app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
@@ -181,7 +181,7 @@ app.use((req, res, next) => {
     // this serves both the API and the client.
     // It is the only port that is not firewalled.
     const port = parseInt(process.env.PORT || "5000", 10);
-    
+
     // Graceful shutdown
     process.on('SIGTERM', () => {
       httpServer.close(() => {
@@ -194,7 +194,7 @@ app.use((req, res, next) => {
         process.exit(0);
       });
     });
-    
+
     httpServer.listen(port, "0.0.0.0", () => {
       log(`serving on port ${port}`);
     });
