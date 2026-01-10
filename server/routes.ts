@@ -585,12 +585,6 @@ export async function registerRoutes(
   // === PAYMENT WEBHOOK - FULL SUBSCRIPTION MANAGEMENT ===
   app.post('/api/payment/dodo-webhook', async (req, res) => {
     try {
-      // Temporary logging for debugging
-      console.log('=== DODO WEBHOOK RECEIVED ===');
-      console.log('Headers:', JSON.stringify(req.headers, null, 2));
-      console.log('Body:', JSON.stringify(req.body, null, 2));
-      console.log('================================');
-      
       const { type, data } = req.body;
       
       // Input validation
@@ -653,9 +647,15 @@ export async function registerRoutes(
         }
         
         const sanitizedEmail = customer.email.toLowerCase().trim();
-        const user = await storage.getUserByEmail(sanitizedEmail);
+        let user = await storage.getUserByEmail(sanitizedEmail);
+        
+        // If user not found by email, try to find by user_id in metadata
+        if (!user && metadata?.user_id) {
+          user = await storage.getUser(metadata.user_id);
+        }
+        
         if (!user) {
-          return res.status(404).json({ error: 'User not found' });
+          return res.status(404).json({ error: 'User not found', email: sanitizedEmail, user_id: metadata?.user_id });
         }
         
         // Create or update payment record
@@ -693,12 +693,6 @@ export async function registerRoutes(
         // Set plan expiration date
         await storage.updateUserPlanExpiration(user._id, endDate);
         
-        // Temporary logging for debugging
-        console.log(`✅ PRO plan activated for user: ${sanitizedEmail}`);
-        console.log(`📅 Subscription end date: ${endDate.toISOString()}`);
-        console.log(`🆔 User ID: ${user._id}`);
-        console.log(`🔑 Subscription ID: ${subscriptionId}`);
-        
         const frontendUrl = metadata?.frontend_url || process.env.FRONTEND_URL || 'https://www.docreplacer.online';
         const redirectUrl = `${frontendUrl}/app/upload?payment_success=true&subscription_id=${subscriptionId}`;
         
@@ -711,8 +705,6 @@ export async function registerRoutes(
           subscription_end_date: endDate.toISOString(),
           user_email: sanitizedEmail
         });
-        
-        console.log(`✅ Webhook response sent successfully for ${type}`);
         
       } else if (updateEvents.includes(type)) {
         // 🔄 UPDATE SUBSCRIPTION
@@ -915,63 +907,6 @@ export async function registerRoutes(
         error: 'Webhook processing failed',
         message: error instanceof Error ? error.message : 'Unknown error'
       });
-    }
-  });
-
-  // === WEBHOOK TEST ENDPOINT (for debugging only) ===
-  app.post('/api/payment/test-webhook', async (req, res) => {
-    try {
-      console.log('=== MANUAL WEBHOOK TEST ===');
-      
-      const { email } = req.body;
-      if (!email) {
-        return res.status(400).json({ error: 'Email is required' });
-      }
-      
-      // Sample webhook data for testing
-      const testWebhookData = {
-        type: 'subscription.active',
-        data: {
-          subscription_id: 'test_sub_' + Date.now(),
-          customer: {
-            email: email
-          },
-          status: 'active',
-          product_id: 'pdt_0NVX9quGOX5LINtgREm6f',
-          recurring_pre_tax_amount: 300,
-          next_billing_date: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-          expires_at: new Date(Date.now() + 30 * 24 * 60 * 60 * 1000).toISOString(),
-          metadata: {
-            user_id: 'test_user',
-            plan: 'PRO',
-            frontend_url: process.env.FRONTEND_URL || 'https://www.docreplacer.online'
-          }
-        }
-      };
-      
-      console.log('Test webhook data:', JSON.stringify(testWebhookData, null, 2));
-      
-      // Forward to actual webhook handler by making internal request
-      const webhookResponse = await fetch(`${req.protocol}://${req.get('host')}/api/payment/dodo-webhook`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(testWebhookData)
-      });
-      
-      const webhookResult = await webhookResponse.json();
-      
-      res.json({ 
-        success: true,
-        message: 'Test webhook sent',
-        webhook_response: webhookResult,
-        test_data: testWebhookData
-      });
-      
-    } catch (error) {
-      console.error('❌ Test webhook failed:', error);
-      res.status(500).json({ error: 'Test webhook failed', details: error instanceof Error ? error.message : 'Unknown error' });
     }
   });
   // Get user documents
