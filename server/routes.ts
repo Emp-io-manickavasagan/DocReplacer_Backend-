@@ -585,6 +585,7 @@ export async function registerRoutes(
   // === PAYMENT WEBHOOK - FULL SUBSCRIPTION MANAGEMENT ===
   app.post('/api/payment/dodo-webhook', async (req, res) => {
     try {
+      
       const { type, data } = req.body;
 
       // Input validation
@@ -603,7 +604,7 @@ export async function registerRoutes(
         'checkout.session.completed'
       ];
 
-      // Handle subscription update events
+      // Handle subscription update events (but check if it should activate)
       const updateEvents = [
         'subscription.updated',
         'subscription.plan_changed',
@@ -709,8 +710,8 @@ export async function registerRoutes(
         });
 
       } else if (updateEvents.includes(type)) {
-        // 🔄 UPDATE SUBSCRIPTION
-        const { subscription_id, customer, status, next_billing_date, expires_at, amount, recurring_pre_tax_amount } = data;
+        // 🔄 UPDATE SUBSCRIPTION (or activate if status is active)
+        const { subscription_id, customer, status, next_billing_date, expires_at, amount, recurring_pre_tax_amount, product_id } = data;
 
         if (!customer?.email) {
           return res.status(400).json({ error: 'Missing customer email' });
@@ -722,16 +723,44 @@ export async function registerRoutes(
         }
 
         const sanitizedEmail = customer.email.toLowerCase().trim();
-        const user = await storage.getUserByEmail(sanitizedEmail);
+        let user;
+        
+        // Try to identify user first via metadata (most reliable), then email
+        if (data.metadata?.user_id) {
+          user = await storage.getUser(data.metadata.user_id);
+        }
+        
+        // If user not found by metadata, try to find by email
         if (!user) {
-          return res.status(404).json({ error: 'User not found' });
+          user = await storage.getUserByEmail(sanitizedEmail);
+        }
+        
+        if (!user) {
+          return res.status(404).json({ error: 'User not found', email: sanitizedEmail });
         }
 
-        // Update subscription details if subscription_id provided
-        if (subscription_id) {
+        // If status is active, treat this as an activation (for Dodo's subscription.updated)
+        if (status === 'active') {
+          
+          // Create or update payment record
+          const subscriptionId = subscription_id || data.id || `dodo_${Date.now()}`;
+          let paymentRecord = await storage.getPaymentByPurchaseId(subscriptionId);
+          
+          if (!paymentRecord) {
+            paymentRecord = await storage.createPayment({
+              userId: user._id,
+              dodoPurchaseId: subscriptionId,
+              productId: product_id || 'pro_plan',
+              amount: recurring_pre_tax_amount || amount || 300,
+              status: 'completed',
+              customerEmail: sanitizedEmail
+            });
+          }
+
+          // Calculate subscription dates
           const startDate = new Date();
           let endDate;
-
+          
           if (expires_at) {
             endDate = new Date(expires_at);
           } else if (next_billing_date) {
@@ -740,26 +769,55 @@ export async function registerRoutes(
             endDate = new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
           }
 
-          await storage.updatePaymentStatus(subscription_id, 'completed', { startDate, endDate });
-          await storage.updateUserPlanExpiration(user._id, endDate);
-
-          // Update payment amount if provided
-          if (recurring_pre_tax_amount || amount) {
-            await storage.updatePaymentAmount(subscription_id, recurring_pre_tax_amount || amount);
-          }
-        }
-
-        // Keep PRO plan active if subscription is active
-        if (status === 'active' || status === 'pending' || !status) {
+          // Update payment and user records
+          await storage.updatePaymentStatus(subscriptionId, 'completed', { startDate, endDate });
           await storage.updateUserPlan(user._id, 'PRO');
-        }
+          await storage.updateUserPlanExpiration(user._id, endDate);
+          
+          res.json({
+            success: true,
+            action: 'plan_activated_via_update',
+            message: `PRO plan activated via ${type} with status=active`,
+            subscription_id: subscriptionId,
+            subscription_end_date: endDate.toISOString(),
+            user_email: sanitizedEmail
+          });
+          
+        } else {
+          // Regular update logic
+          if (subscription_id) {
+            const startDate = new Date();
+            let endDate;
 
-        res.json({
-          success: true,
-          action: 'subscription_updated',
-          message: `Subscription updated via ${type}`,
-          user_email: sanitizedEmail
-        });
+            if (expires_at) {
+              endDate = new Date(expires_at);
+            } else if (next_billing_date) {
+              endDate = new Date(next_billing_date);
+            } else {
+              endDate = new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
+            }
+
+            await storage.updatePaymentStatus(subscription_id, 'completed', { startDate, endDate });
+            await storage.updateUserPlanExpiration(user._id, endDate);
+
+            // Update payment amount if provided
+            if (recurring_pre_tax_amount || amount) {
+              await storage.updatePaymentAmount(subscription_id, recurring_pre_tax_amount || amount);
+            }
+          }
+
+          // Keep PRO plan active if subscription is active or pending
+          if (status === 'pending' || !status) {
+            await storage.updateUserPlan(user._id, 'PRO');
+          }
+
+          res.json({
+            success: true,
+            action: 'subscription_updated',
+            message: `Subscription updated via ${type}`,
+            user_email: sanitizedEmail
+          });
+        }
 
       } else if (deactivationEvents.includes(type)) {
         // ❌ DEACTIVATE PRO PLAN
@@ -910,6 +968,51 @@ export async function registerRoutes(
         message: error instanceof Error ? error.message : 'Unknown error'
       });
     }
+  });
+
+  // === MANUAL PLAN ACTIVATION (for testing) ===
+  app.post('/api/admin/activate-plan', async (req, res) => {
+    try {
+      const { email } = req.body;
+      
+      if (!email) {
+        return res.status(400).json({ error: 'Email is required' });
+      }
+      
+      const user = await storage.getUserByEmail(email.toLowerCase().trim());
+      if (!user) {
+        return res.status(404).json({ error: 'User not found', email });
+      }
+      
+      // Activate PRO plan
+      await storage.updateUserPlan(user._id, 'PRO');
+      
+      // Set expiration date (30 days from now)
+      const endDate = new Date(Date.now() + 30 * 24 * 60 * 60 * 1000);
+      await storage.updateUserPlanExpiration(user._id, endDate);
+      
+      res.json({
+        success: true,
+        message: 'PRO plan activated manually',
+        user: {
+          email: user.email,
+          plan: 'PRO',
+          expires: endDate.toISOString()
+        }
+      });
+      
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to activate plan' });
+    }
+  });
+
+  // === CHECK WEBHOOK LOGS ===
+  app.get('/api/admin/webhook-status', async (req, res) => {
+    res.json({
+      message: 'Check server console for webhook logs',
+      webhook_url: 'https://docreplacer-backend.onrender.com/api/payment/dodo-webhook',
+      timestamp: new Date().toISOString()
+    });
   });
   // Get user documents
   app.get('/api/user/documents', authenticateToken, async (req: AuthRequest, res) => {
