@@ -507,7 +507,7 @@ export async function registerRoutes(
 
       // Try to create proper Dodo checkout session via API
       try {
-        const dodoResponse = await fetch(`${process.env.DODO_API_BASE_URL}/checkout-sessions`, {
+        const dodoResponse = await fetch('https://api.dodopayments.com/v1/checkout-sessions', {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${process.env.DODO_API_KEY}`,
@@ -515,7 +515,7 @@ export async function registerRoutes(
           },
           body: JSON.stringify({
             product_cart: [{
-              product_id: process.env.DODO_PRODUCT_ID,
+              product_id: 'pdt_0NVxNSCQ9JYoBiK8mVUnI',
               quantity: 1
             }],
             feature_flags: {
@@ -552,7 +552,7 @@ export async function registerRoutes(
       }
 
       // Fallback to direct URL approach if API fails
-      const baseUrl = `${process.env.DODO_CHECKOUT_BASE_URL}/${process.env.DODO_PRODUCT_ID}`;
+      const baseUrl = 'https://test.checkout.dodopayments.com/buy/pdt_0NVxNSCQ9JYoBiK8mVUnI';
       const params = new URLSearchParams({
         quantity: '1',
         customer_email: customer_email,
@@ -585,13 +585,28 @@ export async function registerRoutes(
   // === PAYMENT WEBHOOK - FULL SUBSCRIPTION MANAGEMENT ===
   app.post('/api/payment/dodo-webhook', async (req, res) => {
     try {
+      // DEBUG: Log all webhook data to see what Dodo is actually sending
+      console.log('=== DODO WEBHOOK RECEIVED ===');
+      console.log('Timestamp:', new Date().toISOString());
+      console.log('Headers:', JSON.stringify(req.headers, null, 2));
+      console.log('Body:', JSON.stringify(req.body, null, 2));
+      console.log('Raw Body Type:', typeof req.body);
+      console.log('================================');
       
       const { type, data } = req.body;
 
+      // DEBUG: Log parsed webhook data
+      console.log('📋 Parsed webhook data:');
+      console.log('Event type:', type);
+      console.log('Event data:', JSON.stringify(data, null, 2));
+
       // Input validation
       if (!type || !data || typeof type !== 'string') {
+        console.log('❌ Invalid webhook data - missing type or data');
         return res.status(400).json({ error: 'Invalid webhook data' });
       }
+
+      console.log('✅ Webhook data validation passed');
 
       // Handle subscription activation events
       const activationEvents = [
@@ -636,6 +651,7 @@ export async function registerRoutes(
       ];
 
       if (activationEvents.includes(type)) {
+        console.log('🟢 Processing ACTIVATION event:', type);
         // ✅ ACTIVATE PRO PLAN
         const { subscription_id, customer, status, next_billing_date, expires_at, metadata, amount, recurring_pre_tax_amount } = data;
 
@@ -709,7 +725,10 @@ export async function registerRoutes(
           user_email: sanitizedEmail
         });
 
+        console.log('✅ ACTIVATION SUCCESS - Response sent for:', sanitizedEmail);
+
       } else if (updateEvents.includes(type)) {
+        console.log('🔄 Processing UPDATE event:', type);
         // 🔄 UPDATE SUBSCRIPTION (or activate if status is active)
         const { subscription_id, customer, status, next_billing_date, expires_at, amount, recurring_pre_tax_amount, product_id } = data;
 
@@ -741,6 +760,7 @@ export async function registerRoutes(
 
         // If status is active, treat this as an activation (for Dodo's subscription.updated)
         if (status === 'active') {
+          console.log('🎯 Status is ACTIVE - treating as activation for:', sanitizedEmail);
           
           // Create or update payment record
           const subscriptionId = subscription_id || data.id || `dodo_${Date.now()}`;
@@ -783,7 +803,10 @@ export async function registerRoutes(
             user_email: sanitizedEmail
           });
           
+          console.log('✅ UPDATE->ACTIVATION SUCCESS - Response sent for:', sanitizedEmail);
+          
         } else {
+          console.log('🔄 Regular update - status is:', status, 'for:', sanitizedEmail);
           // Regular update logic
           if (subscription_id) {
             const startDate = new Date();
@@ -820,6 +843,7 @@ export async function registerRoutes(
         }
 
       } else if (deactivationEvents.includes(type)) {
+        console.log('🔴 Processing DEACTIVATION event:', type);
         // ❌ DEACTIVATE PRO PLAN
         const { subscription_id, customer, reason, error_message } = data;
 
@@ -955,6 +979,7 @@ export async function registerRoutes(
         });
 
       } else {
+        console.log('❓ UNSUPPORTED event type:', type);
         // 📝 UNSUPPORTED EVENT TYPE
         res.json({
           success: true,
@@ -964,6 +989,10 @@ export async function registerRoutes(
         });
       }
     } catch (error) {
+      console.log('💥 WEBHOOK ERROR:', error);
+      console.log('Error message:', error instanceof Error ? error.message : 'Unknown error');
+      console.log('Error stack:', error instanceof Error ? error.stack : 'No stack trace');
+      
       res.status(500).json({
         error: 'Webhook processing failed',
         message: error instanceof Error ? error.message : 'Unknown error'
