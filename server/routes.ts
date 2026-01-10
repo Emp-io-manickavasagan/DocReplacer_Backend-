@@ -512,8 +512,8 @@ export async function registerRoutes(
       // Determine endpoint based on key prefix
       const isTestKey = apiKey.startsWith('test_');
       const dodoEndpoint = isTestKey
-        ? 'https://test.dodopayments.com/checkouts'
-        : 'https://live.dodopayments.com/checkouts';
+        ? 'https://test.dodopayments.com/v1/checkouts'
+        : 'https://live.dodopayments.com/v1/checkouts';
 
       console.log(`Using Dodo Endpoint: ${dodoEndpoint}`);
 
@@ -558,8 +558,9 @@ export async function registerRoutes(
         try {
           dodoData = JSON.parse(responseText);
         } catch (e) {
-          console.error('Failed to parse Dodo response:', responseText);
-          throw new Error(`Invalid JSON response: ${responseText.substring(0, 100)}...`);
+          console.log('Dodo response was not JSON:', responseText);
+          // If it's not JSON, it's likely a text error from the server
+          throw new Error(`Dodo API Error (${dodoResponse.status}): ${responseText.substring(0, 200)}`);
         }
 
         if (!dodoResponse.ok) {
