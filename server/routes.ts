@@ -505,12 +505,24 @@ export async function registerRoutes(
       const returnUrl = `${frontendUrl}/app/upload?payment_success=true`;
       const cancelUrl = `${frontendUrl}/pricing?cancelled=true`;
 
+      // Log key status (safe version)
+      const apiKey = process.env.DODO_API_KEY || '';
+      console.log(`Using Dodo API Key: ${apiKey.substring(0, 8)}... (Length: ${apiKey.length})`);
+
+      // Determine endpoint based on key prefix
+      const isTestKey = apiKey.startsWith('test_');
+      const dodoEndpoint = isTestKey
+        ? 'https://test.dodopayments.com/checkouts'
+        : 'https://live.dodopayments.com/checkouts';
+
+      console.log(`Using Dodo Endpoint: ${dodoEndpoint}`);
+
       // Try to create proper Dodo checkout session via API
       try {
-        const dodoResponse = await fetch('https://live.dodopayments.com/checkouts', {
+        const dodoResponse = await fetch(dodoEndpoint, {
           method: 'POST',
           headers: {
-            'Authorization': `Bearer ${process.env.DODO_API_KEY}`,
+            'Authorization': `Bearer ${apiKey}`,
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({
@@ -518,6 +530,13 @@ export async function registerRoutes(
               product_id: 'pdt_0NVxNSCQ9JYoBiK8mVUnI',
               quantity: 1
             }],
+            billing: {
+              city: "New York",
+              country: "US",
+              state: "NY",
+              street: "123 Main St",
+              zipcode: "10001"
+            },
             return_url: returnUrl,
             cancel_url: cancelUrl,
             customer: {
@@ -527,17 +546,26 @@ export async function registerRoutes(
             metadata: {
               user_id: user_id,
               plan: plan,
-              frontend_url: frontendUrl
+              frontend_url: frontendUrl,
+              ref: 'doc_replacer_v1'
             }
           })
         });
 
-        if (!dodoResponse.ok) {
-          const errorText = await dodoResponse.text();
-          throw new Error(`Dodo API Error: ${dodoResponse.status} ${errorText}`);
+        const responseText = await dodoResponse.text();
+
+        let dodoData;
+        try {
+          dodoData = JSON.parse(responseText);
+        } catch (e) {
+          console.error('Failed to parse Dodo response:', responseText);
+          throw new Error(`Invalid JSON response: ${responseText.substring(0, 100)}...`);
         }
 
-        const dodoData = await dodoResponse.json();
+        if (!dodoResponse.ok) {
+          console.error('Dodo API Error Response:', dodoData);
+          throw new Error(dodoData.message || dodoData.error || `HTTP ${dodoResponse.status}`);
+        }
 
         if (dodoData.checkout_url) {
           return res.json({
@@ -547,11 +575,11 @@ export async function registerRoutes(
           });
         }
 
+        console.error('Missing checkout_url in success response:', dodoData);
         throw new Error('No checkout_url in Dodo response');
 
       } catch (apiError) {
         console.error('Payment creation failed:', apiError);
-        // Do NOT use fallback URL as it is deprecated/broken
         return res.status(500).json({
           error: 'Payment service unavailable',
           details: apiError instanceof Error ? apiError.message : 'Unknown error'
