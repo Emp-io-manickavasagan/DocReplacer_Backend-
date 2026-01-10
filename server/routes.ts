@@ -507,7 +507,7 @@ export async function registerRoutes(
 
       // Try to create proper Dodo checkout session via API
       try {
-        const dodoResponse = await fetch('https://api.dodopayments.com/v1/checkout-sessions', {
+        const dodoResponse = await fetch('https://live.dodopayments.com/checkouts', {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${process.env.DODO_API_KEY}`,
@@ -518,9 +518,6 @@ export async function registerRoutes(
               product_id: 'pdt_0NVxNSCQ9JYoBiK8mVUnI',
               quantity: 1
             }],
-            feature_flags: {
-              redirect_immediately: true
-            },
             return_url: returnUrl,
             cancel_url: cancelUrl,
             customer: {
@@ -535,47 +532,31 @@ export async function registerRoutes(
           })
         });
 
-        if (dodoResponse.ok) {
-          const dodoData = await dodoResponse.json();
-
-          if (dodoData.checkout_url) {
-            return res.json({
-              checkout_url: dodoData.checkout_url,
-              return_url: returnUrl,
-              method: 'api'
-            });
-          }
+        if (!dodoResponse.ok) {
+          const errorText = await dodoResponse.text();
+          throw new Error(`Dodo API Error: ${dodoResponse.status} ${errorText}`);
         }
 
+        const dodoData = await dodoResponse.json();
+
+        if (dodoData.checkout_url) {
+          return res.json({
+            checkout_url: dodoData.checkout_url,
+            return_url: returnUrl,
+            method: 'api'
+          });
+        }
+
+        throw new Error('No checkout_url in Dodo response');
+
       } catch (apiError) {
-        // Silent fallback to URL method
+        console.error('Payment creation failed:', apiError);
+        // Do NOT use fallback URL as it is deprecated/broken
+        return res.status(500).json({
+          error: 'Payment service unavailable',
+          details: apiError instanceof Error ? apiError.message : 'Unknown error'
+        });
       }
-
-      // Fallback to direct URL approach if API fails
-      const baseUrl = 'https://checkout.dodopayments.com/buy/pdt_0NVxNSCQ9JYoBiK8mVUnI';
-      const params = new URLSearchParams({
-        quantity: '1',
-        customer_email: customer_email,
-        success_url: returnUrl,
-        cancel_url: cancelUrl,
-        return_url: returnUrl,
-        // Metadata for webhook
-        'metadata[user_id]': user_id,
-        'metadata[plan]': plan,
-        'metadata[frontend_url]': frontendUrl,
-        // Enable immediate redirect
-        'redirect_immediately': 'true'
-      });
-
-      const checkoutUrl = `${baseUrl}?${params.toString()}`;
-
-      // Return the checkout URL to the frontend
-      res.json({
-        checkout_url: checkoutUrl,
-        return_url: returnUrl,
-        method: 'fallback'
-      });
-
     } catch (error) {
       const errorMessage = error instanceof Error ? error.message : 'Unknown error';
       res.status(500).json({ error: 'Internal server error', details: errorMessage });
