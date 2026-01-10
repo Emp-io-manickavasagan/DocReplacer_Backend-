@@ -25,6 +25,21 @@ const documentSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
 });
 
+// Payment Schema
+const paymentSchema = new mongoose.Schema({
+  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+  dodoPurchaseId: { type: String, required: true, unique: true },
+  productId: { type: String, required: true },
+  amount: { type: Number, required: true },
+  currency: { type: String, default: 'INR' },
+  status: { type: String, required: true, enum: ['pending', 'completed', 'failed', 'refunded'] },
+  paymentMethod: { type: String },
+  customerEmail: { type: String },
+  subscriptionStartDate: { type: Date },
+  subscriptionEndDate: { type: Date },
+  createdAt: { type: Date, default: Date.now },
+});
+
 // OTP Schema
 const otpSchema = new mongoose.Schema({
   email: { type: String, required: true },
@@ -37,6 +52,7 @@ const otpSchema = new mongoose.Schema({
 // Models
 export const User = mongoose.model('User', userSchema);
 export const Document = mongoose.model('Document', documentSchema);
+export const Payment = mongoose.model('Payment', paymentSchema);
 export const OTP = mongoose.model('OTP', otpSchema);
 
 // Zod schemas for validation
@@ -75,6 +91,29 @@ export type DocumentType = {
   name: string;
   documentId: string;
   originalContent?: string;
+  createdAt: Date;
+};
+
+export const insertPaymentSchema = z.object({
+  userId: z.string(),
+  dodoPurchaseId: z.string(),
+  productId: z.string(),
+  amount: z.number(),
+  status: z.string(),
+});
+
+export type PaymentType = {
+  _id: string;
+  userId: string;
+  dodoPurchaseId: string;
+  productId: string;
+  amount: number;
+  currency: string;
+  status: string;
+  paymentMethod?: string;
+  customerEmail?: string;
+  subscriptionStartDate?: Date;
+  subscriptionEndDate?: Date;
   createdAt: Date;
 };
 

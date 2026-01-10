@@ -9,7 +9,7 @@ import crypto from "crypto";
 import { docxService, fileBufferStore, paragraphMappings, paragraphStyles, documentTimestamps, cleanupExpiredDocuments } from "./docx.service";
 import { authenticateToken, authorizeRole, checkPlanLimit, generateToken, type AuthRequest } from "./middleware";
 import { sendOTP, generateOTP } from "./email.service";
-import { OTP, User } from "./models";
+import { OTP, User, Payment } from "./models";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -497,6 +497,233 @@ export async function registerRoutes(
       res.json({ success: true });
     } catch (error) {
       res.status(500).json({ error: 'Failed to delete document' });
+    }
+  });
+
+  // === DODO PAYMENTS ===
+
+  // Create checkout session
+  app.post('/api/payment/create-checkout-session', authenticateToken, async (req: AuthRequest, res) => {
+    try {
+      const { user_id, plan, customer_email } = req.body;
+
+      if (!user_id || !plan || !customer_email) {
+        return res.status(400).json({ error: 'Missing required fields' });
+      }
+
+      if (req.user!.id !== user_id) {
+        return res.status(403).json({ error: 'Unauthorized' });
+      }
+
+      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+      if (!emailRegex.test(customer_email)) {
+        return res.status(400).json({ error: 'Invalid email format' });
+      }
+
+      const apiKey = process.env.DODO_API_KEY;
+      const productId = process.env.DODO_PRODUCT_ID || 'pdt_0NVxNSCQ9JYoBiK8mVUnI';
+
+      if (!apiKey) {
+        return res.status(500).json({ error: 'Payment service not configured' });
+      }
+
+      const frontendUrl = process.env.FRONTEND_URL || 'https://www.docreplacer.online';
+      const returnUrl = `${frontendUrl}/app/upload?payment_success=true`;
+      const cancelUrl = `${frontendUrl}/pricing?cancelled=true`;
+
+      const isTestKey = apiKey.startsWith('test_');
+      const dodoEndpoint = isTestKey
+        ? 'https://test.dodopayments.com/checkouts'
+        : 'https://live.dodopayments.com/checkouts';
+
+      const payload = {
+        product_cart: [{
+          product_id: productId,
+          quantity: 1
+        }],
+        return_url: returnUrl,
+        cancel_url: cancelUrl,
+        customer: {
+          email: customer_email,
+          name: customer_email.split('@')[0]
+        },
+        metadata: {
+          user_id: user_id,
+          plan: plan,
+          frontend_url: frontendUrl
+        }
+      };
+
+      const dodoResponse = await fetch(dodoEndpoint, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${apiKey}`,
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(payload)
+      });
+
+      const responseText = await dodoResponse.text();
+      let dodoData;
+
+      try {
+        dodoData = JSON.parse(responseText);
+      } catch (e) {
+        console.error('Dodo API returned non-JSON:', responseText);
+        throw new Error(`Dodo API Error (${dodoResponse.status})`);
+      }
+
+      if (!dodoResponse.ok) {
+        console.error('Dodo API Error:', dodoData);
+        throw new Error(dodoData.message || dodoData.error || `HTTP ${dodoResponse.status}`);
+      }
+
+      if (!dodoData.checkout_url) {
+        throw new Error('No checkout_url in Dodo response');
+      }
+
+      return res.json({
+        checkout_url: dodoData.checkout_url,
+        return_url: returnUrl
+      });
+
+    } catch (error) {
+      console.error('Payment creation failed:', error);
+      return res.status(500).json({
+        error: 'Payment service unavailable',
+        details: error instanceof Error ? error.message : 'Unknown error'
+      });
+    }
+  });
+
+  // Dodo webhook handler
+  app.post('/api/payment/dodo-webhook', async (req, res) => {
+    try {
+      const { type, data } = req.body;
+
+      if (!type || !data) {
+        return res.status(400).json({ error: 'Invalid webhook data' });
+      }
+
+      const activationEvents = [
+        'subscription.active',
+        'subscription.created',
+        'subscription.renewed',
+        'subscription.reactivated',
+        'payment.completed',
+        'payment.succeeded',
+        'checkout.session.completed',
+        'subscription.updated'
+      ];
+
+      if (activationEvents.includes(type)) {
+        const { subscription_id, customer, status, next_billing_date, expires_at, metadata, amount, recurring_pre_tax_amount } = data;
+
+        let safeMetadata = metadata;
+        if (typeof metadata === 'string') {
+          try {
+            safeMetadata = JSON.parse(metadata);
+          } catch (e) {
+            safeMetadata = {};
+          }
+        }
+
+        let user;
+        const userId = safeMetadata?.user_id || safeMetadata?.['metadata[user_id]'] || safeMetadata?.userId;
+
+        if (userId) {
+          user = await storage.getUser(userId);
+        }
+
+        if (!user && customer?.email) {
+          user = await storage.getUserByEmail(customer.email.toLowerCase().trim());
+        }
+
+        if (!user) {
+          console.error('User not found for payment:', { userId, email: customer?.email });
+          return res.status(404).json({ error: 'User not found' });
+        }
+
+        if (type === 'subscription.updated' && status !== 'active') {
+          return res.json({ success: true, action: 'no_action_needed' });
+        }
+
+        const subscriptionId = subscription_id || data.id || `dodo_${Date.now()}`;
+
+        const existingPayment = await storage.getPaymentByPurchaseId(subscriptionId);
+        if (existingPayment && existingPayment.status === 'completed') {
+          await storage.updateUserPlan(user._id, 'PRO');
+          return res.json({ success: true, action: 'already_processed' });
+        }
+
+        if (!existingPayment) {
+          await storage.createPayment({
+            userId: user._id,
+            dodoPurchaseId: subscriptionId,
+            productId: data.product_id || process.env.DODO_PRODUCT_ID || 'pdt_0NVxNSCQ9JYoBiK8mVUnI',
+            amount: recurring_pre_tax_amount || amount || 300,
+            status: 'completed',
+            customerEmail: user.email
+          });
+        }
+
+        const startDate = new Date();
+        let endDate;
+
+        if (expires_at) {
+          endDate = new Date(expires_at);
+        } else if (next_billing_date) {
+          endDate = new Date(next_billing_date);
+        } else {
+          endDate = new Date(startDate.getTime() + 30 * 24 * 60 * 60 * 1000);
+        }
+
+        await storage.updatePaymentStatus(subscriptionId, 'completed', { startDate, endDate });
+        await storage.updateUserPlan(user._id, 'PRO');
+        await storage.updateUserPlanExpiration(user._id, endDate);
+
+        return res.json({
+          success: true,
+          action: 'pro_plan_activated',
+          user_email: user.email,
+          plan: 'PRO',
+          expires: endDate.toISOString()
+        });
+      }
+
+      const deactivationEvents = [
+        'subscription.cancelled',
+        'subscription.expired',
+        'subscription.failed',
+        'subscription.suspended',
+        'payment.failed',
+        'payment.refunded'
+      ];
+
+      if (deactivationEvents.includes(type)) {
+        const { customer } = data;
+        if (customer?.email) {
+          const user = await storage.getUserByEmail(customer.email.toLowerCase().trim());
+          if (user) {
+            await storage.updateUserPlan(user._id, 'FREE');
+            await storage.updateUserPlanExpiration(user._id, new Date());
+            return res.json({
+              success: true,
+              action: 'pro_plan_deactivated',
+              user_email: user.email
+            });
+          }
+        }
+      }
+
+      return res.json({ success: true, action: 'event_logged' });
+
+    } catch (error) {
+      console.error('Webhook processing failed:', error);
+      return res.status(500).json({
+        error: 'Webhook processing failed',
+        message: error instanceof Error ? error.message : 'Unknown error'
+      });
     }
   });
 

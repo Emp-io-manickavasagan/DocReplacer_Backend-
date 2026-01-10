@@ -8,7 +8,7 @@ import rateLimit from "express-rate-limit";
 
 // Validate required environment variables
 const requiredEnvVars = ['DATABASE_URL', 'JWT_SECRET'];
-const optionalEnvVars = ['RESEND_API_KEY', 'FRONTEND_URL'];
+const optionalEnvVars = ['RESEND_API_KEY', 'FRONTEND_URL', 'DODO_PRO_PLAN_LINK'];
 
 for (const envVar of requiredEnvVars) {
   if (!process.env[envVar]) {

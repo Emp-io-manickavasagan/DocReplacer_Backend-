@@ -1,4 +1,4 @@
-import { User, Document, type UserType, type DocumentType } from "./models";
+import { User, Document, Payment, type UserType, type DocumentType, type PaymentType } from "./models";
 
 export interface IStorage {
   // Check and downgrade expired PRO users
@@ -23,6 +23,12 @@ export interface IStorage {
   getDocument(documentId: string): Promise<DocumentType | null>;
   getUserDocuments(userId: string): Promise<DocumentType[]>;
   deleteDocument(userId: string, documentId: string): Promise<void>;
+
+  // Payment
+  getUserSubscription(userId: string): Promise<PaymentType | null>;
+  createPayment(payment: { userId: string; dodoPurchaseId: string; productId: string; amount: number; status: string; customerEmail?: string }): Promise<PaymentType>;
+  updatePaymentStatus(dodoPurchaseId: string, status: string, subscriptionData?: { startDate: Date; endDate: Date }): Promise<void>;
+  getPaymentByPurchaseId(dodoPurchaseId: string): Promise<PaymentType | null>;
 
   getUsers(): Promise<UserType[]>;
 }
@@ -84,6 +90,7 @@ export class DatabaseStorage implements IStorage {
   async deleteUser(userId: string): Promise<void> {
     await User.findByIdAndDelete(userId);
     await Document.deleteMany({ userId });
+    await Payment.deleteMany({ userId });
   }
 
   async incrementMonthlyUsage(userId: string): Promise<void> {
@@ -127,6 +134,35 @@ export class DatabaseStorage implements IStorage {
 
   async deleteDocument(userId: string, documentId: string): Promise<void> {
     await Document.findOneAndDelete({ userId, documentId });
+  }
+
+  async getUserSubscription(userId: string): Promise<PaymentType | null> {
+    return await Payment.findOne({
+      userId,
+      status: 'completed',
+      subscriptionEndDate: { $gte: new Date() }
+    }).sort({ createdAt: -1 });
+  }
+
+  async createPayment(payment: { userId: string; dodoPurchaseId: string; productId: string; amount: number; status: string; customerEmail?: string }): Promise<PaymentType> {
+    const p = new Payment(payment);
+    return await p.save();
+  }
+
+  async updatePaymentStatus(dodoPurchaseId: string, status: string, subscriptionData?: { startDate: Date; endDate: Date }): Promise<void> {
+    const updates: any = { status };
+    if (subscriptionData) {
+      updates.subscriptionStartDate = subscriptionData.startDate;
+      updates.subscriptionEndDate = subscriptionData.endDate;
+    }
+    const result = await Payment.findOneAndUpdate({ dodoPurchaseId }, updates, { new: true });
+    if (!result) {
+      throw new Error(`Payment not found for update: ${dodoPurchaseId}`);
+    }
+  }
+
+  async getPaymentByPurchaseId(dodoPurchaseId: string): Promise<PaymentType | null> {
+    return await Payment.findOne({ dodoPurchaseId });
   }
 
   async getUsers(): Promise<UserType[]> {
