@@ -358,10 +358,6 @@ export async function registerRoutes(
     const user = await storage.getUser(req.user!.id);
     if (!user) return res.status(401).json({ message: "Unauthorized" });
 
-    console.log('--- API ME CALLED ---');
-    console.log('User ID from Token:', req.user!.id);
-    console.log('User in DB:', { id: user._id, email: user.email, plan: user.plan });
-
     res.json({
       id: user._id,
       email: user.email,
@@ -525,11 +521,12 @@ export async function registerRoutes(
       }
 
       // Append metadata to the direct link so the webhook can identify the user
-      // Dodo supports passing these as query parameters
+      // Dodo supports passing these as query parameters with metadata_ prefix
       const url = new URL(proPlanLink);
       url.searchParams.set('quantity', '1');
       url.searchParams.set('customer_email', customer_email);
-      url.searchParams.set('metadata[user_id]', user_id);
+      url.searchParams.set('metadata_user_id', user_id);
+      url.searchParams.set('metadata_email', customer_email);
 
       const frontendUrl = process.env.FRONTEND_URL || 'https://www.docreplacer.online';
       const returnUrl = `${frontendUrl}/app/upload?payment_success=true`;
@@ -586,9 +583,6 @@ export async function registerRoutes(
       if (activationEvents.includes(type)) {
         const { subscription_id, customer, status, next_billing_date, expires_at, metadata, amount, recurring_pre_tax_amount } = data;
 
-        console.log('Extracted Metadata:', metadata);
-        console.log('Extracted Customer:', customer);
-
         let safeMetadata = metadata;
         if (typeof metadata === 'string') {
           try {
@@ -599,32 +593,26 @@ export async function registerRoutes(
         }
 
         let user;
-        const userId = safeMetadata?.user_id || safeMetadata?.['metadata[user_id]'] || safeMetadata?.userId || data?.metadata?.user_id;
-
-        console.log('Resolved UserId:', userId);
-        console.log('Resolved Customer Email:', customer?.email);
+        // Dodo metadata parameters like metadata_user_id become keys in the metadata object
+        const userId = safeMetadata?.user_id || safeMetadata?.userId || safeMetadata?.['metadata[user_id]'] || data?.metadata?.user_id;
+        const metadataEmail = safeMetadata?.email;
 
         if (userId) {
           user = await storage.getUser(userId);
         }
 
+        if (!user && metadataEmail) {
+          user = await storage.getUserByEmail(metadataEmail.toLowerCase().trim());
+        }
+
         if (!user && customer?.email) {
-          const email = customer.email.toLowerCase().trim();
-          const usersWithEmail = await User.find({ email });
-          console.log(`Checking for duplicates for ${email}: Found ${usersWithEmail.length} records`);
-          if (usersWithEmail.length > 1) {
-            console.warn('CRITICAL: Duplicate users found for email:', email);
-            usersWithEmail.forEach(u => console.log(` - ID: ${u._id}, Plan: ${u.plan}, Role: ${u.role}`));
-          }
-          user = await storage.getUserByEmail(email);
+          user = await storage.getUserByEmail(customer.email.toLowerCase().trim());
         }
 
         if (!user) {
-          console.error('USER NOT FOUND IN DB for payment:', { userId, email: customer?.email });
+          console.error('CRITICAL: User not found in DB for payment event:', { userId, metadataEmail, customerEmail: customer?.email });
           return res.status(404).json({ error: 'User not found in database' });
         }
-
-        console.log('USER FOUND BY WEBHOOK:', { id: user._id, email: user.email, plan: user.plan });
 
         if (type === 'subscription.updated' && status !== 'active') {
           return res.json({ success: true, action: 'no_action_needed' });
