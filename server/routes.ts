@@ -515,75 +515,18 @@ export async function registerRoutes(
         return res.status(403).json({ error: 'Unauthorized' });
       }
 
-      const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-      if (!emailRegex.test(customer_email)) {
-        return res.status(400).json({ error: 'Invalid email format' });
-      }
+      // Use direct payment link from environment
+      const proPlanLink = process.env.DODO_PRO_PLAN_LINK;
 
-      const apiKey = process.env.DODO_API_KEY;
-      const productId = process.env.DODO_PRODUCT_ID || 'pdt_0NVxNSCQ9JYoBiK8mVUnI';
-
-      if (!apiKey) {
-        return res.status(500).json({ error: 'Payment service not configured' });
+      if (!proPlanLink) {
+        return res.status(500).json({ error: 'Payment service not configured. Please contact support.' });
       }
 
       const frontendUrl = process.env.FRONTEND_URL || 'https://www.docreplacer.online';
       const returnUrl = `${frontendUrl}/app/upload?payment_success=true`;
-      const cancelUrl = `${frontendUrl}/pricing?cancelled=true`;
-
-      const isTestKey = apiKey.startsWith('test_');
-      const dodoEndpoint = isTestKey
-        ? 'https://test.dodopayments.com/checkouts'
-        : 'https://live.dodopayments.com/checkouts';
-
-      const payload = {
-        product_cart: [{
-          product_id: productId,
-          quantity: 1
-        }],
-        return_url: returnUrl,
-        cancel_url: cancelUrl,
-        customer: {
-          email: customer_email,
-          name: customer_email.split('@')[0]
-        },
-        metadata: {
-          user_id: user_id,
-          plan: plan,
-          frontend_url: frontendUrl
-        }
-      };
-
-      const dodoResponse = await fetch(dodoEndpoint, {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${apiKey}`,
-          'Content-Type': 'application/json'
-        },
-        body: JSON.stringify(payload)
-      });
-
-      const responseText = await dodoResponse.text();
-      let dodoData;
-
-      try {
-        dodoData = JSON.parse(responseText);
-      } catch (e) {
-        console.error('Dodo API returned non-JSON:', responseText);
-        throw new Error(`Dodo API Error (${dodoResponse.status})`);
-      }
-
-      if (!dodoResponse.ok) {
-        console.error('Dodo API Error:', dodoData);
-        throw new Error(dodoData.message || dodoData.error || `HTTP ${dodoResponse.status}`);
-      }
-
-      if (!dodoData.checkout_url) {
-        throw new Error('No checkout_url in Dodo response');
-      }
 
       return res.json({
-        checkout_url: dodoData.checkout_url,
+        checkout_url: proPlanLink,
         return_url: returnUrl
       });
 
