@@ -875,6 +875,21 @@ export async function registerRoutes(
     }
   });
 
+  // Admin get user transactions
+  app.get('/api/admin/user/:id/transactions', authenticateToken, authorizeRole(['ADMIN']), async (req: AuthRequest, res) => {
+    const userId = req.params.id;
+    if (!/^[0-9a-fA-F]{24}$/.test(userId)) {
+      return res.status(400).json({ error: 'Invalid user ID' });
+    }
+
+    try {
+      const transactions = await storage.getPaymentsByUserId(userId);
+      res.json(transactions);
+    } catch (error) {
+      res.status(500).json({ error: 'Failed to fetch transactions' });
+    }
+  });
+
   // Admin toggle VIP status
   app.put('/api/admin/user/:id/toggle-vip', authenticateToken, authorizeRole(['ADMIN']), async (req: AuthRequest, res) => {
     const userId = req.params.id;

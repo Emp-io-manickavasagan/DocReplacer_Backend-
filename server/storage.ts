@@ -175,6 +175,10 @@ export class DatabaseStorage implements IStorage {
   async getUsers(): Promise<UserType[]> {
     return await User.find();
   }
+
+  async getPaymentsByUserId(userId: string): Promise<PaymentType[]> {
+    return await Payment.find({ userId }).sort({ createdAt: -1 });
+  }
 }
 
 export const storage = new DatabaseStorage();
