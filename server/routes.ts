@@ -507,7 +507,7 @@ export async function registerRoutes(
 
       // Try to create proper Dodo checkout session via API
       try {
-        const dodoResponse = await fetch('https://api.dodopayments.com/v1/checkout-sessions', {
+        const dodoResponse = await fetch(`${process.env.DODO_API_BASE_URL}/checkout-sessions`, {
           method: 'POST',
           headers: {
             'Authorization': `Bearer ${process.env.DODO_API_KEY}`,
@@ -515,7 +515,7 @@ export async function registerRoutes(
           },
           body: JSON.stringify({
             product_cart: [{
-              product_id: 'pdt_0NVX9quGOX5LINtgREm6f',
+              product_id: process.env.DODO_PRODUCT_ID,
               quantity: 1
             }],
             feature_flags: {
@@ -552,7 +552,7 @@ export async function registerRoutes(
       }
 
       // Fallback to direct URL approach if API fails
-      const baseUrl = 'https://checkout.dodopayments.com/buy/pdt_0NVX9quGOX5LINtgREm6f';
+      const baseUrl = `${process.env.DODO_CHECKOUT_BASE_URL}/${process.env.DODO_PRODUCT_ID}`;
       const params = new URLSearchParams({
         quantity: '1',
         customer_email: customer_email,
@@ -821,7 +821,7 @@ export async function registerRoutes(
 
       } else if (deactivationEvents.includes(type)) {
         // ❌ DEACTIVATE PRO PLAN
-        const { subscription_id, customer, reason } = data;
+        const { subscription_id, customer, reason, error_message } = data;
 
         if (!customer?.email) {
           return res.status(400).json({ error: 'Missing customer email' });
@@ -858,6 +858,7 @@ export async function registerRoutes(
           action: 'plan_deactivated',
           message: `PRO plan deactivated via ${type}`,
           reason: reason || type,
+          error_message: error_message || null,
           user_email: sanitizedEmail
         });
 
@@ -1010,7 +1011,6 @@ export async function registerRoutes(
   app.get('/api/admin/webhook-status', async (req, res) => {
     res.json({
       message: 'Check server console for webhook logs',
-      webhook_url: 'https://docreplacer-backend.onrender.com/api/payment/dodo-webhook',
       timestamp: new Date().toISOString()
     });
   });

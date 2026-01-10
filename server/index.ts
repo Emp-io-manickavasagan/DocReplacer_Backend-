@@ -76,7 +76,7 @@ app.use((req, res, next) => {
   
   const origin = req.headers.origin;
   
-  // Allow only production origins
+  // Allow origins based on environment
   if (allowedOrigins.includes(origin)) {
     res.header('Access-Control-Allow-Origin', origin);
   } else {
