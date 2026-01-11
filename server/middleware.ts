@@ -80,13 +80,26 @@ export const checkPlanLimit = async (req: AuthRequest, res: Response, next: Next
 
   const limits = {
     'FREE': 3,
-    'PRO': Infinity // Unlimited for PRO users
+    'PRO': 30 // 30 documents per month for PRO users
   };
 
   const limit = limits[user.plan as keyof typeof limits] || 0;
 
   if (user.monthlyUsage >= limit) {
-    return res.status(403).json({ message: "Monthly plan limit exceeded. Please upgrade to PRO." });
+    // Calculate days remaining until reset
+    const planActivatedAt = user.planActivatedAt || user.createdAt;
+    const nextResetDate = new Date(planActivatedAt.getTime() + (30 * 24 * 60 * 60 * 1000)); // 30 days from activation
+    const daysUntilReset = Math.ceil((nextResetDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
+    
+    const message = user.plan === 'FREE' 
+      ? 'Please upgrade to PRO for 30 documents per month.'
+      : `Sorry, limit reached. Your usage will be reset in ${daysUntilReset} day${daysUntilReset !== 1 ? 's' : ''}.`;
+    
+    return res.status(403).json({ 
+      message: `Monthly plan limit exceeded. ${message}`,
+      daysUntilReset: user.plan === 'PRO' ? daysUntilReset : null,
+      resetDate: user.plan === 'PRO' ? nextResetDate.toISOString() : null
+    });
   }
 
   next();

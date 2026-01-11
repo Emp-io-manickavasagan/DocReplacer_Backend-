@@ -365,6 +365,8 @@ export async function registerRoutes(
       role: user.role,
       plan: user.plan,
       monthlyUsage: user.monthlyUsage || 0,
+      planActivatedAt: user.planActivatedAt,
+      createdAt: user.createdAt,
       planExpiresAt: user.planExpiresAt,
       cancelAtPeriodEnd: user.cancelAtPeriodEnd || false,
       subscription: null
@@ -808,6 +810,7 @@ export async function registerRoutes(
         role: user.role,
         plan: user.plan,
         monthlyUsage: user.monthlyUsage,
+        planActivatedAt: user.planActivatedAt,
         createdAt: user.createdAt,
         planExpiresAt: user.planExpiresAt,
         cancelAtPeriodEnd: user.cancelAtPeriodEnd || false
