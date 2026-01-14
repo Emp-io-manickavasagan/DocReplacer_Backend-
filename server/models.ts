@@ -62,6 +62,20 @@ const guestUsageSchema = new mongoose.Schema({
 export const User = mongoose.model('User', userSchema);
 export const Document = mongoose.model('Document', documentSchema);
 export const Payment = mongoose.model('Payment', paymentSchema);
+
+// Review Schema
+const reviewSchema = new mongoose.Schema({
+  documentId: { type: String, required: true },
+  userId: { type: String, default: null }, // null for guest users
+  browserId: { type: String, default: null }, // for guest tracking
+  rating: { type: Number, required: true, min: 1, max: 5 },
+  reasons: [{ type: String }], // Array of reasons for low ratings
+  feedback: { type: String, default: '' }, // Custom feedback text
+  userType: { type: String, enum: ['GUEST', 'FREE', 'PRO', 'VIP'], required: true },
+  createdAt: { type: Date, default: Date.now }
+});
+
+export const Review = mongoose.model('Review', reviewSchema);
 export const OTP = mongoose.model('OTP', otpSchema);
 export const GuestUsage = mongoose.model('GuestUsage', guestUsageSchema);
 

@@ -9,7 +9,7 @@ import crypto from "crypto";
 import { docxService, fileBufferStore, paragraphMappings, paragraphStyles, documentTimestamps, cleanupExpiredDocuments } from "./docx.service";
 import { authenticateToken, authenticateTokenOrGuest, authorizeRole, checkPlanLimit, generateToken, type AuthRequest } from "./middleware";
 import { sendOTP, generateOTP } from "./email.service";
-import { OTP, User, Payment } from "./models";
+import { OTP, User, Payment, Review } from "./models";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -1037,6 +1037,106 @@ export async function registerRoutes(
 
     await sendOTP(user.email, otp);
     res.json({ message: "OTP sent to email" });
+  });
+
+  // === REVIEWS ===
+  app.post('/api/review/submit', authenticateTokenOrGuest, async (req: AuthRequest, res) => {
+    try {
+      const { documentId, rating, reasons, feedback } = req.body;
+
+      // Validation
+      if (!documentId || !rating) {
+        return res.status(400).json({ message: "Document ID and rating are required" });
+      }
+
+      if (rating < 1 || rating > 5) {
+        return res.status(400).json({ message: "Rating must be between 1 and 5" });
+      }
+
+      // Determine user type
+      let userType = 'GUEST';
+      if (req.user) {
+        const user = await storage.getUser(req.user.id);
+        if (user) {
+          userType = user.role === 'VIP' ? 'VIP' : user.plan;
+        }
+      }
+
+      // Create review
+      const review = await Review.create({
+        documentId,
+        userId: req.user?.id || null,
+        browserId: req.browserId || null,
+        rating,
+        reasons: reasons || [],
+        feedback: feedback || '',
+        userType
+      });
+
+      res.json({ success: true, reviewId: review._id });
+    } catch (error) {
+      console.error('Review submission error:', error);
+      res.status(500).json({ message: "Failed to submit review" });
+    }
+  });
+
+  // Get review analytics (Admin only)
+  app.get('/api/admin/review-analytics', authenticateToken, authorizeRole(['ADMIN']), async (req: AuthRequest, res) => {
+    try {
+      const reviews = await Review.find().sort({ createdAt: -1 });
+
+      // Calculate analytics
+      const totalReviews = reviews.length;
+      const averageRating = reviews.length > 0
+        ? reviews.reduce((sum, r) => sum + r.rating, 0) / reviews.length
+        : 0;
+
+      const ratingDistribution = {
+        1: reviews.filter(r => r.rating === 1).length,
+        2: reviews.filter(r => r.rating === 2).length,
+        3: reviews.filter(r => r.rating === 3).length,
+        4: reviews.filter(r => r.rating === 4).length,
+        5: reviews.filter(r => r.rating === 5).length,
+      };
+
+      const userTypeDistribution = {
+        GUEST: reviews.filter(r => r.userType === 'GUEST').length,
+        FREE: reviews.filter(r => r.userType === 'FREE').length,
+        PRO: reviews.filter(r => r.userType === 'PRO').length,
+        VIP: reviews.filter(r => r.userType === 'VIP').length,
+      };
+
+      // Count reasons for low ratings (1-2 stars)
+      const lowRatingReviews = reviews.filter(r => r.rating <= 2);
+      const reasonCounts: Record<string, number> = {};
+      lowRatingReviews.forEach(review => {
+        review.reasons.forEach((reason: string) => {
+          reasonCounts[reason] = (reasonCounts[reason] || 0) + 1;
+        });
+      });
+
+      // Get recent reviews with details
+      const recentReviews = reviews.slice(0, 50).map(r => ({
+        id: r._id,
+        rating: r.rating,
+        reasons: r.reasons,
+        feedback: r.feedback,
+        userType: r.userType,
+        createdAt: r.createdAt
+      }));
+
+      res.json({
+        totalReviews,
+        averageRating: Math.round(averageRating * 10) / 10,
+        ratingDistribution,
+        userTypeDistribution,
+        reasonCounts,
+        recentReviews
+      });
+    } catch (error) {
+      console.error('Analytics fetch error:', error);
+      res.status(500).json({ message: "Failed to fetch analytics" });
+    }
   });
 
   return httpServer;
