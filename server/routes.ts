@@ -374,7 +374,7 @@ export async function registerRoutes(
   });
 
   // === DOCX ===
-  app.post(api.docx.upload.path, authenticateToken, upload.single('file'), async (req: AuthRequest, res) => {
+  app.post(api.docx.upload.path, authenticateTokenOrGuest, upload.single('file'), async (req: AuthRequest, res) => {
     if (!req.file) {
       return res.status(400).json({ message: "No file uploaded" });
     }
@@ -404,20 +404,23 @@ export async function registerRoutes(
       paragraphStyles.set(documentId, result.styleMap);
       documentTimestamps.set(documentId, Date.now());
 
-      await storage.createDocument({
-        userId: req.user!.id,
-        name: filename,
-        documentId,
-        originalContent: JSON.stringify(result.nodes)
-      });
+      // Only create document record for authenticated users
+      if (!req.isGuest && req.user) {
+        await storage.createDocument({
+          userId: req.user.id,
+          name: filename,
+          documentId,
+          originalContent: JSON.stringify(result.nodes)
+        });
+      }
 
-      res.json({ documentId, paragraphs: result.nodes });
+      res.json({ documentId, paragraphs: result.nodes, isGuest: req.isGuest });
     } catch (err) {
       res.status(500).json({ message: "Failed to parse DOCX" });
     }
   });
 
-  app.post(api.docx.export.path, authenticateToken, checkPlanLimit, async (req: AuthRequest, res) => {
+  app.post(api.docx.export.path, authenticateTokenOrGuest, checkPlanLimit, async (req: AuthRequest, res) => {
     try {
       const { documentId, paragraphs } = req.body;
 
@@ -459,7 +462,12 @@ export async function registerRoutes(
 
       const newBuffer = await docxService.rebuild(originalBuffer, paragraphs, paragraphMap);
 
-      await storage.incrementMonthlyUsage(req.user!.id);
+      // Increment usage based on user type
+      if (req.isGuest && req.browserId) {
+        await storage.incrementGuestUsage(req.browserId, documentId);
+      } else if (req.user) {
+        await storage.incrementMonthlyUsage(req.user.id);
+      }
 
       // Clean up memory after successful export
       fileBufferStore.delete(documentId);

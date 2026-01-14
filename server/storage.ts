@@ -1,4 +1,4 @@
-import { User, Document, Payment, type UserType, type DocumentType, type PaymentType } from "./models";
+import { User, Document, Payment, GuestUsage, type UserType, type DocumentType, type PaymentType, type GuestUsageType } from "./models";
 
 export interface IStorage {
   // Check and downgrade expired PRO users
@@ -30,6 +30,11 @@ export interface IStorage {
   createPayment(payment: { userId: string; dodoPurchaseId: string; productId: string; amount: number; status: string; customerEmail?: string }): Promise<PaymentType>;
   updatePaymentStatus(dodoPurchaseId: string, status: string, subscriptionData?: { startDate: Date; endDate: Date }): Promise<void>;
   getPaymentByPurchaseId(dodoPurchaseId: string): Promise<PaymentType | null>;
+
+  // Guest Usage
+  getGuestUsage(browserId: string): Promise<GuestUsageType | null>;
+  incrementGuestUsage(browserId: string, documentId?: string): Promise<GuestUsageType>;
+  canGuestUse(browserId: string): Promise<boolean>;
 
   getUsers(): Promise<UserType[]>;
 }
@@ -178,6 +183,44 @@ export class DatabaseStorage implements IStorage {
 
   async getPaymentsByUserId(userId: string): Promise<PaymentType[]> {
     return await Payment.find({ userId }).sort({ createdAt: -1 });
+  }
+
+  // Guest Usage Methods
+  async getGuestUsage(browserId: string): Promise<GuestUsageType | null> {
+    return await GuestUsage.findOne({ browserId });
+  }
+
+  async incrementGuestUsage(browserId: string, documentId?: string): Promise<GuestUsageType> {
+    let guestUsage = await GuestUsage.findOne({ browserId });
+    
+    if (!guestUsage) {
+      guestUsage = new GuestUsage({
+        browserId,
+        count: 0,
+        documents: [],
+        firstUsed: new Date(),
+        lastUsed: new Date()
+      });
+    }
+    
+    // Only increment if document ID is new or not provided
+    if (!documentId || !guestUsage.documents.includes(documentId)) {
+      guestUsage.count += 1;
+      if (documentId) {
+        guestUsage.documents.push(documentId);
+      }
+    }
+    
+    guestUsage.lastUsed = new Date();
+    return await guestUsage.save();
+  }
+
+  async canGuestUse(browserId: string): Promise<boolean> {
+    const guestUsage = await GuestUsage.findOne({ browserId });
+    if (!guestUsage) {
+      return true; // New guest, can use
+    }
+    return guestUsage.count < 3; // Max 3 uses for guests
   }
 }
 

@@ -49,11 +49,21 @@ const otpSchema = new mongoose.Schema({
   createdAt: { type: Date, default: Date.now },
 });
 
+// Guest Usage Schema
+const guestUsageSchema = new mongoose.Schema({
+  browserId: { type: String, required: true, unique: true },
+  count: { type: Number, default: 0 },
+  documents: [{ type: String }], // Array of document IDs
+  firstUsed: { type: Date, default: Date.now },
+  lastUsed: { type: Date, default: Date.now },
+});
+
 // Models
 export const User = mongoose.model('User', userSchema);
 export const Document = mongoose.model('Document', documentSchema);
 export const Payment = mongoose.model('Payment', paymentSchema);
 export const OTP = mongoose.model('OTP', otpSchema);
+export const GuestUsage = mongoose.model('GuestUsage', guestUsageSchema);
 
 // Zod schemas for validation
 export const insertUserSchema = z.object({
@@ -115,6 +125,15 @@ export type PaymentType = {
   subscriptionStartDate?: Date;
   subscriptionEndDate?: Date;
   createdAt: Date;
+};
+
+export type GuestUsageType = {
+  _id: string;
+  browserId: string;
+  count: number;
+  documents: string[];
+  firstUsed: Date;
+  lastUsed: Date;
 };
 
 

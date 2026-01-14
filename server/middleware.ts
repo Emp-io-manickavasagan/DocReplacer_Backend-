@@ -11,6 +11,8 @@ export interface AuthRequest extends Request {
     role: string;
     plan: string;
   };
+  isGuest?: boolean;
+  browserId?: string;
 }
 
 export const authenticateToken = (req: AuthRequest, res: Response, next: NextFunction) => {
@@ -28,6 +30,32 @@ export const authenticateToken = (req: AuthRequest, res: Response, next: NextFun
   });
 };
 
+export const authenticateTokenOrGuest = (req: AuthRequest, res: Response, next: NextFunction) => {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+  const browserId = req.headers['x-browser-id'] as string;
+
+  if (token) {
+    // Try to authenticate with token
+    jwt.verify(token, JWT_SECRET, (err: any, user: any) => {
+      if (!err) {
+        req.user = user;
+        req.isGuest = false;
+      } else {
+        // Token invalid, treat as guest
+        req.isGuest = true;
+        req.browserId = browserId;
+      }
+      next();
+    });
+  } else {
+    // No token, treat as guest
+    req.isGuest = true;
+    req.browserId = browserId;
+    next();
+  }
+};
+
 export const authorizeRole = (roles: string[]) => {
   return (req: AuthRequest, res: Response, next: NextFunction) => {
     if (!req.user || !roles.includes(req.user.role)) {
@@ -38,6 +66,27 @@ export const authorizeRole = (roles: string[]) => {
 };
 
 export const checkPlanLimit = async (req: AuthRequest, res: Response, next: NextFunction) => {
+  // Handle guest users
+  if (req.isGuest) {
+    const browserId = req.browserId;
+    if (!browserId) {
+      return res.status(400).json({ message: "Browser ID required for guest users" });
+    }
+
+    const canUse = await storage.canGuestUse(browserId);
+    if (!canUse) {
+      const guestUsage = await storage.getGuestUsage(browserId);
+      return res.status(403).json({ 
+        message: "Guest limit reached. Please login to get 3 free edits per month.",
+        isGuest: true,
+        guestUsage: guestUsage?.count || 3
+      });
+    }
+    
+    return next();
+  }
+
+  // Handle authenticated users
   if (!req.user) {
     return res.status(401).json({ message: "Unauthorized" });
   }
