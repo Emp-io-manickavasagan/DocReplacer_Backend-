@@ -389,10 +389,20 @@ export async function registerRoutes(
       return res.status(400).json({ message: "File size must be less than 10MB" });
     }
 
-    // Validate filename
+    // Validate filename - allow spaces and common characters, but prevent path traversal
     const filename = req.file.originalname;
-    if (filename.length > 255 || !/^[a-zA-Z0-9._-]+\.docx$/.test(filename)) {
-      return res.status(400).json({ message: "Invalid filename" });
+    if (filename.length > 255) {
+      return res.status(400).json({ message: "Filename too long (max 255 characters)" });
+    }
+    
+    // Check for path traversal attempts
+    if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
+      return res.status(400).json({ message: "Invalid filename - path traversal not allowed" });
+    }
+    
+    // Check for dangerous characters (null bytes, control characters)
+    if (/[\x00-\x1f\x7f]/.test(filename)) {
+      return res.status(400).json({ message: "Invalid filename - contains control characters" });
     }
 
     try {
