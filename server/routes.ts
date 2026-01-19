@@ -9,7 +9,6 @@ import crypto from "crypto";
 import { docxService, fileBufferStore, paragraphMappings, paragraphStyles, documentTimestamps, cleanupExpiredDocuments } from "./docx.service";
 import { authenticateToken, authenticateTokenOrGuest, authorizeRole, checkPlanLimit, generateToken, type AuthRequest } from "./middleware";
 import { sendOTP, generateOTP } from "./email.service";
-import { OTP, User, Payment, Review } from "./models";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -124,7 +123,7 @@ export async function registerRoutes(
         success: true,
         message: "Admin user created successfully",
         admin: {
-          id: adminUser._id,
+          id: adminUser.id,
           email: adminUser.email,
           role: adminUser.role
         }
@@ -174,8 +173,8 @@ export async function registerRoutes(
       const otp = generateOTP();
       const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-      await OTP.deleteMany({ email: sanitizedEmail });
-      await OTP.create({ email: sanitizedEmail, otp, expiresAt, userData: { email: sanitizedEmail, password, name: sanitizedName } });
+      await storage.deleteOTPsByEmail(sanitizedEmail);
+      await storage.createOTP({ email: sanitizedEmail, otp, expiresAt, userData: { email: sanitizedEmail, password, name: sanitizedName } });
 
       try {
         await sendOTP(sanitizedEmail, otp);
@@ -210,20 +209,20 @@ export async function registerRoutes(
       }
 
       const sanitizedEmail = email.toLowerCase().trim();
-      const otpRecord = await OTP.findOne({ email: sanitizedEmail, otp });
+      const otpRecord = await storage.getOTP(sanitizedEmail, otp);
 
-      if (!otpRecord || otpRecord.expiresAt < new Date()) {
+      if (!otpRecord || new Date(otpRecord.expires_at) < new Date()) {
         return res.status(400).json({ message: "Invalid or expired OTP" });
       }
 
-      const { userData } = otpRecord;
+      const { user_data: userData } = otpRecord;
       const hashedPassword = await bcrypt.hash(userData.password, 10);
       const user = await storage.createUser({ ...userData, password: hashedPassword, isVerified: true });
 
-      await OTP.deleteOne({ _id: otpRecord._id });
+      await storage.deleteOTP(otpRecord.id);
 
-      const token = generateToken({ id: user._id, email: user.email, role: user.role, plan: user.plan });
-      res.status(201).json({ token, user: { id: user._id, email: user.email, name: user.name || user.email.split('@')[0], role: user.role, plan: user.plan } });
+      const token = generateToken({ id: user.id, email: user.email, role: user.role, plan: user.plan });
+      res.status(201).json({ token, user: { id: user.id, email: user.email, name: user.name || user.email.split('@')[0], role: user.role, plan: user.plan } });
     } catch (err) {
       res.status(500).json({ message: "Verification failed" });
     }
@@ -252,8 +251,8 @@ export async function registerRoutes(
       const otp = generateOTP();
       const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-      await OTP.deleteMany({ email: sanitizedEmail });
-      await OTP.create({ email: sanitizedEmail, otp, expiresAt, userData: { type: 'password_reset' } });
+      await storage.deleteOTPsByEmail(sanitizedEmail);
+      await storage.createOTP({ email: sanitizedEmail, otp, expiresAt, userData: { type: 'password_reset' } });
 
       try {
         await sendOTP(sanitizedEmail, otp);
@@ -294,16 +293,16 @@ export async function registerRoutes(
       }
 
       const sanitizedEmail = email.toLowerCase().trim();
-      const otpRecord = await OTP.findOne({ email: sanitizedEmail, otp });
+      const otpRecord = await storage.getOTP(sanitizedEmail, otp);
 
-      if (!otpRecord || otpRecord.expiresAt < new Date()) {
+      if (!otpRecord || new Date(otpRecord.expires_at) < new Date()) {
         return res.status(400).json({ message: "Invalid or expired OTP" });
       }
 
       const hashedPassword = await bcrypt.hash(newPassword, 10);
       await storage.updateUserPassword(sanitizedEmail, hashedPassword);
 
-      await OTP.deleteOne({ _id: otpRecord._id });
+      await storage.deleteOTP(otpRecord.id);
 
       res.json({ message: "Password reset successfully" });
     } catch (err) {
@@ -324,9 +323,9 @@ export async function registerRoutes(
         password: hashedPassword,
         name: input.name || input.email.split('@')[0] // Ensure name is always provided
       });
-      const token = generateToken({ id: user._id, email: user.email, role: user.role, plan: user.plan });
+      const token = generateToken({ id: user.id, email: user.email, role: user.role, plan: user.plan });
 
-      res.status(201).json({ token, user: { id: user._id, email: user.email, name: user.name || user.email.split('@')[0], role: user.role, plan: user.plan } });
+      res.status(201).json({ token, user: { id: user.id, email: user.email, name: user.name || user.email.split('@')[0], role: user.role, plan: user.plan } });
     } catch (err) {
       if (err instanceof z.ZodError) {
         return res.status(400).json({ message: err.errors[0].message });
@@ -344,8 +343,8 @@ export async function registerRoutes(
         return res.status(401).json({ message: "Invalid credentials" });
       }
 
-      const token = generateToken({ id: user._id, email: user.email, role: user.role, plan: user.plan });
-      res.status(200).json({ token, user: { id: user._id, email: user.email, name: user.name || user.email.split('@')[0], role: user.role, plan: user.plan } });
+      const token = generateToken({ id: user.id, email: user.email, role: user.role, plan: user.plan });
+      res.status(200).json({ token, user: { id: user.id, email: user.email, name: user.name || user.email.split('@')[0], role: user.role, plan: user.plan } });
     } catch (err) {
       res.status(500).json({ message: "Internal server error" });
     }
@@ -359,16 +358,16 @@ export async function registerRoutes(
     if (!user) return res.status(401).json({ message: "Unauthorized" });
 
     res.json({
-      id: user._id,
+      id: user.id,
       email: user.email,
       name: user.name || user.email.split('@')[0], // Fallback to email prefix if name is missing
       role: user.role,
       plan: user.plan,
-      monthlyUsage: user.monthlyUsage || 0,
-      planActivatedAt: user.planActivatedAt,
-      createdAt: user.createdAt,
-      planExpiresAt: user.planExpiresAt,
-      cancelAtPeriodEnd: user.cancelAtPeriodEnd || false,
+      monthlyUsage: user.monthly_usage || 0,
+      planActivatedAt: user.plan_activated_at,
+      createdAt: user.created_at,
+      planExpiresAt: user.plan_expires_at,
+      cancelAtPeriodEnd: user.cancel_at_period_end || false,
       subscription: null
     });
   });
@@ -649,7 +648,7 @@ export async function registerRoutes(
           const existingPayment = await storage.getPaymentByPurchaseId(subscriptionId);
           if (!existingPayment) {
             await storage.createPayment({
-              userId: user._id,
+              userId: user.id,
               dodoPurchaseId: subscriptionId,
               productId: data.product_id || process.env.DODO_PRODUCT_ID || 'pdt_0NVxNSCQ9JYoBiK8mVUnI',
               amount: recurring_pre_tax_amount || amount || 300,
@@ -659,7 +658,7 @@ export async function registerRoutes(
           }
         } catch (paymentError: any) {
           // If it's a duplicate key error, we can ignore it as the record already exists
-          if (paymentError.code !== 11000) {
+          if (!paymentError.message?.includes('duplicate key')) {
             console.error('Non-duplicate payment creation error:', paymentError);
           }
         }
@@ -683,8 +682,8 @@ export async function registerRoutes(
         }
 
         try {
-          await storage.updateUserPlan(user._id, 'PRO');
-          await storage.updateUserPlanExpiration(user._id, endDate);
+          await storage.updateUserPlan(user.id, 'PRO');
+          await storage.updateUserPlanExpiration(user.id, endDate);
         } catch (e) {
           console.error('Plan activation error:', e);
           throw e; // This is a real failure
@@ -715,7 +714,7 @@ export async function registerRoutes(
           if (user) {
             // Respect scheduled cancellation
             if (type === 'subscription.cancelled') {
-              await storage.cancelSubscription(user._id);
+              await storage.cancelSubscription(user.id);
               return res.json({
                 success: true,
                 action: 'pro_plan_cancellation_scheduled',
@@ -724,8 +723,8 @@ export async function registerRoutes(
             }
 
             // For other failure/expiration events, downgrade immediately
-            await storage.updateUserPlan(user._id, 'FREE');
-            await storage.updateUserPlanExpiration(user._id, new Date());
+            await storage.updateUserPlan(user.id, 'FREE');
+            await storage.updateUserPlanExpiration(user.id, new Date());
             return res.json({
               success: true,
               action: 'pro_plan_deactivated',
@@ -808,7 +807,7 @@ export async function registerRoutes(
   });
   app.get('/api/user/payments', authenticateToken, async (req: AuthRequest, res) => {
     try {
-      const payments = await Payment.find({ userId: req.user!.id }).sort({ createdAt: -1 });
+      const payments = await storage.getPaymentsByUserId(req.user!.id);
       res.json(payments);
     } catch (error) {
       res.status(500).json({ error: 'Failed to fetch payments' });
@@ -822,16 +821,16 @@ export async function registerRoutes(
 
       // Remove sensitive data before sending
       const sanitizedUsers = users.map(user => ({
-        _id: user._id,
+        id: user.id,
         email: user.email,
         name: user.name || user.email.split('@')[0], // Fallback for users without names
         role: user.role,
         plan: user.plan,
-        monthlyUsage: user.monthlyUsage,
-        planActivatedAt: user.planActivatedAt,
-        createdAt: user.createdAt,
-        planExpiresAt: user.planExpiresAt,
-        cancelAtPeriodEnd: user.cancelAtPeriodEnd || false
+        monthlyUsage: user.monthly_usage,
+        planActivatedAt: user.plan_activated_at,
+        createdAt: user.created_at,
+        planExpiresAt: user.plan_expires_at,
+        cancelAtPeriodEnd: user.cancel_at_period_end || false
       }));
 
       res.json(sanitizedUsers);
@@ -849,7 +848,7 @@ export async function registerRoutes(
       for (const user of users) {
         if (!user.name || user.name.trim() === '') {
           const defaultName = user.email.split('@')[0];
-          await User.findByIdAndUpdate(user._id, { name: defaultName });
+          await storage.updateUserProfile(user.id, { name: defaultName });
           updatedCount++;
         }
       }
@@ -899,7 +898,9 @@ export async function registerRoutes(
   // Admin get user transactions
   app.get('/api/admin/user/:id/transactions', authenticateToken, authorizeRole(['ADMIN']), async (req: AuthRequest, res) => {
     const userId = req.params.id;
-    if (!/^[0-9a-fA-F]{24}$/.test(userId)) {
+    // Validate UUID format
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(userId)) {
       return res.status(400).json({ error: 'Invalid user ID' });
     }
 
@@ -916,8 +917,9 @@ export async function registerRoutes(
     const userId = req.params.id;
     const { isVip } = req.body;
 
-    // Validate userId format (MongoDB ObjectId)
-    if (!/^[0-9a-fA-F]{24}$/.test(userId)) {
+    // Validate UUID format
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(userId)) {
       return res.status(400).json({ error: 'Invalid user ID' });
     }
 
@@ -946,8 +948,9 @@ export async function registerRoutes(
       return res.status(400).json({ error: 'Invalid plan type' });
     }
 
-    // Validate userId format (MongoDB ObjectId)
-    if (!/^[0-9a-fA-F]{24}$/.test(userId)) {
+    // Validate UUID format
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(userId)) {
       return res.status(400).json({ error: 'Invalid user ID' });
     }
 
@@ -964,8 +967,9 @@ export async function registerRoutes(
       return res.status(400).json({ error: 'Invalid role type' });
     }
 
-    // Validate userId format
-    if (!/^[0-9a-fA-F]{24}$/.test(userId)) {
+    // Validate UUID format
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(userId)) {
       return res.status(400).json({ error: 'Invalid user ID' });
     }
 
@@ -981,8 +985,9 @@ export async function registerRoutes(
   app.put('/api/admin/user/:id/reset-usage', authenticateToken, authorizeRole(['ADMIN']), async (req: AuthRequest, res) => {
     const userId = req.params.id;
 
-    // Validate userId format
-    if (!/^[0-9a-fA-F]{24}$/.test(userId)) {
+    // Validate UUID format
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(userId)) {
       return res.status(400).json({ error: 'Invalid user ID' });
     }
 
@@ -993,8 +998,9 @@ export async function registerRoutes(
   app.delete('/api/admin/user/:id', authenticateToken, authorizeRole(['ADMIN']), async (req: AuthRequest, res) => {
     const userId = req.params.id;
 
-    // Validate userId format
-    if (!/^[0-9a-fA-F]{24}$/.test(userId)) {
+    // Validate UUID format
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(userId)) {
       return res.status(400).json({ error: 'Invalid user ID' });
     }
 
@@ -1015,13 +1021,13 @@ export async function registerRoutes(
       return res.status(400).json({ message: "Invalid password" });
     }
 
-    const otpRecord = await OTP.findOne({ email: user.email, otp });
-    if (!otpRecord || otpRecord.expiresAt < new Date()) {
+    const otpRecord = await storage.getOTP(user.email, otp);
+    if (!otpRecord || new Date(otpRecord.expires_at) < new Date()) {
       return res.status(400).json({ message: "Invalid or expired OTP" });
     }
 
     await storage.deleteUser(req.user!.id);
-    await OTP.deleteOne({ _id: otpRecord._id });
+    await storage.deleteOTP(otpRecord.id);
     res.json({ success: true });
   });
 
@@ -1032,8 +1038,8 @@ export async function registerRoutes(
     const otp = generateOTP();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
 
-    await OTP.deleteMany({ email: user.email });
-    await OTP.create({ email: user.email, otp, expiresAt, userData: { type: 'account_deletion' } });
+    await storage.deleteOTPsByEmail(user.email);
+    await storage.createOTP({ email: user.email, otp, expiresAt, userData: { type: 'account_deletion' } });
 
     await sendOTP(user.email, otp);
     res.json({ message: "OTP sent to email" });
@@ -1063,7 +1069,7 @@ export async function registerRoutes(
       }
 
       // Create review
-      const review = await Review.create({
+      const review = await storage.createReview({
         documentId,
         userId: req.user?.id || null,
         browserId: req.browserId || null,
@@ -1073,7 +1079,7 @@ export async function registerRoutes(
         userType
       });
 
-      res.json({ success: true, reviewId: review._id });
+      res.json({ success: true, reviewId: review.id });
     } catch (error) {
       console.error('Review submission error:', error);
       res.status(500).json({ message: "Failed to submit review" });
@@ -1083,7 +1089,7 @@ export async function registerRoutes(
   // Get review analytics (Admin only)
   app.get('/api/admin/review-analytics', authenticateToken, authorizeRole(['ADMIN']), async (req: AuthRequest, res) => {
     try {
-      const reviews = await Review.find().sort({ createdAt: -1 });
+      const reviews = await storage.getReviews();
 
       // Calculate analytics
       const totalReviews = reviews.length;
@@ -1100,10 +1106,10 @@ export async function registerRoutes(
       };
 
       const userTypeDistribution = {
-        GUEST: reviews.filter(r => r.userType === 'GUEST').length,
-        FREE: reviews.filter(r => r.userType === 'FREE').length,
-        PRO: reviews.filter(r => r.userType === 'PRO').length,
-        VIP: reviews.filter(r => r.userType === 'VIP').length,
+        GUEST: reviews.filter(r => r.user_type === 'GUEST').length,
+        FREE: reviews.filter(r => r.user_type === 'FREE').length,
+        PRO: reviews.filter(r => r.user_type === 'PRO').length,
+        VIP: reviews.filter(r => r.user_type === 'VIP').length,
       };
 
       // Count reasons for low ratings (1-2 stars)
@@ -1117,12 +1123,12 @@ export async function registerRoutes(
 
       // Get recent reviews with details
       const recentReviews = reviews.slice(0, 50).map(r => ({
-        id: r._id,
+        id: r.id,
         rating: r.rating,
         reasons: r.reasons,
         feedback: r.feedback,
-        userType: r.userType,
-        createdAt: r.createdAt
+        userType: r.user_type,
+        createdAt: r.created_at
       }));
 
       res.json({

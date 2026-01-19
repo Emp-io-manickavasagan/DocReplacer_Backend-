@@ -1,4 +1,5 @@
-import { User, Document, Payment, GuestUsage, type UserType, type DocumentType, type PaymentType, type GuestUsageType } from "./models";
+import { supabase } from "./supabase";
+import { UserType, DocumentType, PaymentType, GuestUsageType, OTPType } from "./models";
 
 export interface IStorage {
   // Check and downgrade expired PRO users
@@ -39,189 +40,548 @@ export interface IStorage {
   getUsers(): Promise<UserType[]>;
 }
 
-export class DatabaseStorage implements IStorage {
+export class SupabaseStorage implements IStorage {
   async checkExpiredPlans(): Promise<void> {
-    const now = new Date();
-    await User.updateMany(
-      {
-        plan: 'PRO',
-        planExpiresAt: { $lt: now }
-      },
-      {
+    const now = new Date().toISOString();
+    
+    const { error } = await supabase
+      .from('users')
+      .update({
         plan: 'FREE',
-        planExpiresAt: null,
-        monthlyUsage: 0,
-        cancelAtPeriodEnd: false
-      }
-    );
+        plan_expires_at: null,
+        monthly_usage: 0,
+        cancel_at_period_end: false
+      })
+      .eq('plan', 'PRO')
+      .lt('plan_expires_at', now);
+
+    if (error) {
+      console.error('Error checking expired plans:', error);
+    }
   }
 
   async getUser(id: string): Promise<UserType | null> {
-    return await User.findById(id);
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('id', id)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') return null; // No rows returned
+      throw error;
+    }
+
+    return data;
   }
 
   async getUserByEmail(email: string): Promise<UserType | null> {
-    return await User.findOne({ email });
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .eq('email', email)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') return null; // No rows returned
+      throw error;
+    }
+
+    return data;
   }
 
   async createUser(insertUser: { email: string; password: string; name: string; role?: string; isVerified?: boolean }): Promise<UserType> {
-    const user = new User(insertUser);
-    return await user.save();
+    const { data, error } = await supabase
+      .from('users')
+      .insert({
+        email: insertUser.email,
+        password: insertUser.password,
+        name: insertUser.name,
+        role: insertUser.role || 'USER'
+      })
+      .select()
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    return data;
   }
 
   async updateUserPlan(userId: string, plan: string): Promise<void> {
     const updates: any = {
       plan,
-      cancelAtPeriodEnd: false
+      cancel_at_period_end: false
     };
 
     if (plan === 'PRO') {
-      updates.planActivatedAt = new Date();
+      updates.plan_activated_at = new Date().toISOString();
     } else if (plan === 'FREE') {
-      updates.planExpiresAt = null;
+      updates.plan_expires_at = null;
     }
 
-    const result = await User.findByIdAndUpdate(userId, updates, { new: true });
-    if (!result) {
-      throw new Error(`Failed to update user plan: ${userId}`);
+    const { error } = await supabase
+      .from('users')
+      .update(updates)
+      .eq('id', userId);
+
+    if (error) {
+      throw new Error(`Failed to update user plan: ${userId} - ${error.message}`);
     }
   }
 
   async updatePlanActivationDate(userId: string, date: Date): Promise<void> {
-    await User.findByIdAndUpdate(userId, { planActivatedAt: date });
+    const { error } = await supabase
+      .from('users')
+      .update({ plan_activated_at: date.toISOString() })
+      .eq('id', userId);
+
+    if (error) {
+      throw error;
+    }
   }
 
   async updateUserRole(userId: string, role: string): Promise<void> {
-    await User.findByIdAndUpdate(userId, { role });
+    const { error } = await supabase
+      .from('users')
+      .update({ role })
+      .eq('id', userId);
+
+    if (error) {
+      throw error;
+    }
   }
 
   async cancelSubscription(userId: string): Promise<void> {
-    await User.findByIdAndUpdate(userId, { cancelAtPeriodEnd: true });
+    const { error } = await supabase
+      .from('users')
+      .update({ cancel_at_period_end: true })
+      .eq('id', userId);
+
+    if (error) {
+      throw error;
+    }
   }
 
   async deleteUser(userId: string): Promise<void> {
-    await User.findByIdAndDelete(userId);
-    await Document.deleteMany({ userId });
-    await Payment.deleteMany({ userId });
+    // Delete related records first (cascade should handle this, but being explicit)
+    await supabase.from('documents').delete().eq('user_id', userId);
+    await supabase.from('payments').delete().eq('user_id', userId);
+    
+    const { error } = await supabase
+      .from('users')
+      .delete()
+      .eq('id', userId);
+
+    if (error) {
+      throw error;
+    }
   }
 
   async incrementMonthlyUsage(userId: string): Promise<void> {
-    await User.findByIdAndUpdate(userId, { $inc: { monthlyUsage: 1 } });
+    // Get current usage first
+    const { data: user, error: fetchError } = await supabase
+      .from('users')
+      .select('monthly_usage')
+      .eq('id', userId)
+      .single();
+
+    if (fetchError) {
+      throw fetchError;
+    }
+
+    const { error } = await supabase
+      .from('users')
+      .update({ monthly_usage: (user.monthly_usage || 0) + 1 })
+      .eq('id', userId);
+
+    if (error) {
+      throw error;
+    }
   }
 
   async resetMonthlyUsage(userId: string): Promise<void> {
-    await User.findByIdAndUpdate(userId, {
-      monthlyUsage: 0,
-      lastUsageReset: new Date()
-    });
+    const { error } = await supabase
+      .from('users')
+      .update({
+        monthly_usage: 0,
+        last_usage_reset: new Date().toISOString()
+      })
+      .eq('id', userId);
+
+    if (error) {
+      throw error;
+    }
   }
 
   async updateUserPassword(email: string, hashedPassword: string): Promise<void> {
-    await User.findOneAndUpdate({ email }, { password: hashedPassword });
+    const { error } = await supabase
+      .from('users')
+      .update({ password: hashedPassword })
+      .eq('email', email);
+
+    if (error) {
+      throw error;
+    }
   }
 
   async updateUserProfile(userId: string, profile: { name: string }): Promise<void> {
-    await User.findByIdAndUpdate(userId, profile);
+    const { error } = await supabase
+      .from('users')
+      .update(profile)
+      .eq('id', userId);
+
+    if (error) {
+      throw error;
+    }
   }
 
   async updateUserPlanExpiration(userId: string, expirationDate: Date): Promise<void> {
-    const result = await User.findByIdAndUpdate(userId, { planExpiresAt: expirationDate }, { new: true });
-    if (!result) {
-      throw new Error(`Failed to update user plan expiration: ${userId}`);
+    const { error } = await supabase
+      .from('users')
+      .update({ plan_expires_at: expirationDate.toISOString() })
+      .eq('id', userId);
+
+    if (error) {
+      throw new Error(`Failed to update user plan expiration: ${userId} - ${error.message}`);
     }
   }
 
   async createDocument(doc: { userId: string; name: string; documentId: string; originalContent: string }): Promise<DocumentType> {
-    const document = new Document(doc);
-    return await document.save();
+    const { data, error } = await supabase
+      .from('documents')
+      .insert({
+        user_id: doc.userId,
+        name: doc.name,
+        document_id: doc.documentId,
+        original_content: doc.originalContent
+      })
+      .select()
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    return data;
   }
 
   async getDocument(documentId: string): Promise<DocumentType | null> {
-    return await Document.findOne({ documentId });
+    const { data, error } = await supabase
+      .from('documents')
+      .select('*')
+      .eq('document_id', documentId)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') return null; // No rows returned
+      throw error;
+    }
+
+    return data;
   }
 
   async getUserDocuments(userId: string): Promise<DocumentType[]> {
-    return await Document.find({ userId }).sort({ createdAt: -1 });
+    const { data, error } = await supabase
+      .from('documents')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      throw error;
+    }
+
+    return data || [];
   }
 
   async deleteDocument(userId: string, documentId: string): Promise<void> {
-    await Document.findOneAndDelete({ userId, documentId });
+    const { error } = await supabase
+      .from('documents')
+      .delete()
+      .eq('user_id', userId)
+      .eq('document_id', documentId);
+
+    if (error) {
+      throw error;
+    }
   }
 
   async getUserSubscription(userId: string): Promise<PaymentType | null> {
-    return await Payment.findOne({
-      userId,
-      status: 'completed',
-      subscriptionEndDate: { $gte: new Date() }
-    }).sort({ createdAt: -1 });
+    const { data, error } = await supabase
+      .from('payments')
+      .select('*')
+      .eq('user_id', userId)
+      .eq('status', 'completed')
+      .gte('subscription_end_date', new Date().toISOString())
+      .order('created_at', { ascending: false })
+      .limit(1)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') return null; // No rows returned
+      throw error;
+    }
+
+    return data;
   }
 
   async createPayment(payment: { userId: string; dodoPurchaseId: string; productId: string; amount: number; status: string; customerEmail?: string }): Promise<PaymentType> {
-    const p = new Payment(payment);
-    return await p.save();
+    const { data, error } = await supabase
+      .from('payments')
+      .insert({
+        user_id: payment.userId,
+        dodo_purchase_id: payment.dodoPurchaseId,
+        product_id: payment.productId,
+        amount: payment.amount,
+        status: payment.status,
+        customer_email: payment.customerEmail
+      })
+      .select()
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    return data;
   }
 
   async updatePaymentStatus(dodoPurchaseId: string, status: string, subscriptionData?: { startDate: Date; endDate: Date }): Promise<void> {
     const updates: any = { status };
     if (subscriptionData) {
-      updates.subscriptionStartDate = subscriptionData.startDate;
-      updates.subscriptionEndDate = subscriptionData.endDate;
+      updates.subscription_start_date = subscriptionData.startDate.toISOString();
+      updates.subscription_end_date = subscriptionData.endDate.toISOString();
     }
-    const result = await Payment.findOneAndUpdate({ dodoPurchaseId }, updates, { new: true });
-    if (!result) {
-      throw new Error(`Payment not found for update: ${dodoPurchaseId}`);
+
+    const { error } = await supabase
+      .from('payments')
+      .update(updates)
+      .eq('dodo_purchase_id', dodoPurchaseId);
+
+    if (error) {
+      throw new Error(`Payment not found for update: ${dodoPurchaseId} - ${error.message}`);
     }
   }
 
   async getPaymentByPurchaseId(dodoPurchaseId: string): Promise<PaymentType | null> {
-    return await Payment.findOne({ dodoPurchaseId });
+    const { data, error } = await supabase
+      .from('payments')
+      .select('*')
+      .eq('dodo_purchase_id', dodoPurchaseId)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') return null; // No rows returned
+      throw error;
+    }
+
+    return data;
   }
 
   async getUsers(): Promise<UserType[]> {
-    return await User.find();
+    const { data, error } = await supabase
+      .from('users')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      throw error;
+    }
+
+    return data || [];
   }
 
   async getPaymentsByUserId(userId: string): Promise<PaymentType[]> {
-    return await Payment.find({ userId }).sort({ createdAt: -1 });
+    const { data, error } = await supabase
+      .from('payments')
+      .select('*')
+      .eq('user_id', userId)
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      throw error;
+    }
+
+    return data || [];
   }
 
   // Guest Usage Methods
   async getGuestUsage(browserId: string): Promise<GuestUsageType | null> {
-    return await GuestUsage.findOne({ browserId });
+    const { data, error } = await supabase
+      .from('guest_usage')
+      .select('*')
+      .eq('browser_id', browserId)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') return null; // No rows returned
+      throw error;
+    }
+
+    return data;
   }
 
   async incrementGuestUsage(browserId: string, documentId?: string): Promise<GuestUsageType> {
-    let guestUsage = await GuestUsage.findOne({ browserId });
+    let guestUsage = await this.getGuestUsage(browserId);
     
     if (!guestUsage) {
-      guestUsage = new GuestUsage({
-        browserId,
-        count: 0,
-        documents: [],
-        firstUsed: new Date(),
-        lastUsed: new Date()
-      });
+      // Create new guest usage record
+      const { data, error } = await supabase
+        .from('guest_usage')
+        .insert({
+          browser_id: browserId,
+          count: documentId ? 1 : 0,
+          documents: documentId ? [documentId] : [],
+          first_used: new Date().toISOString(),
+          last_used: new Date().toISOString()
+        })
+        .select()
+        .single();
+
+      if (error) {
+        throw error;
+      }
+
+      return data;
     }
     
-    // Only increment if document ID is new or not provided
+    // Update existing record
+    let shouldIncrement = false;
+    let newDocuments = [...guestUsage.documents];
+    
     if (!documentId || !guestUsage.documents.includes(documentId)) {
-      guestUsage.count += 1;
+      shouldIncrement = true;
       if (documentId) {
-        guestUsage.documents.push(documentId);
+        newDocuments.push(documentId);
       }
     }
     
-    guestUsage.lastUsed = new Date();
-    return await guestUsage.save();
+    const updates: any = {
+      last_used: new Date().toISOString(),
+      documents: newDocuments
+    };
+    
+    if (shouldIncrement) {
+      updates.count = guestUsage.count + 1;
+    }
+
+    const { data, error } = await supabase
+      .from('guest_usage')
+      .update(updates)
+      .eq('browser_id', browserId)
+      .select()
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    return data;
   }
 
   async canGuestUse(browserId: string): Promise<boolean> {
-    const guestUsage = await GuestUsage.findOne({ browserId });
+    const guestUsage = await this.getGuestUsage(browserId);
     if (!guestUsage) {
       return true; // New guest, can use
     }
     return guestUsage.count < 3; // Max 3 uses for guests
   }
+
+  // OTP Methods
+  async createOTP(otp: { email: string; otp: string; expiresAt: Date; userData: any }): Promise<OTPType> {
+    const { data, error } = await supabase
+      .from('otps')
+      .insert({
+        email: otp.email,
+        otp: otp.otp,
+        expires_at: otp.expiresAt.toISOString(),
+        user_data: otp.userData
+      })
+      .select()
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    return data;
+  }
+
+  async getOTP(email: string, otp: string): Promise<OTPType | null> {
+    const { data, error } = await supabase
+      .from('otps')
+      .select('*')
+      .eq('email', email)
+      .eq('otp', otp)
+      .single();
+
+    if (error) {
+      if (error.code === 'PGRST116') return null; // No rows returned
+      throw error;
+    }
+
+    return data;
+  }
+
+  async deleteOTP(id: string): Promise<void> {
+    const { error } = await supabase
+      .from('otps')
+      .delete()
+      .eq('id', id);
+
+    if (error) {
+      throw error;
+    }
+  }
+
+  async deleteOTPsByEmail(email: string): Promise<void> {
+    const { error } = await supabase
+      .from('otps')
+      .delete()
+      .eq('email', email);
+
+    if (error) {
+      throw error;
+    }
+  }
+
+  // Review Methods
+  async createReview(review: { documentId: string; userId?: string | null; browserId?: string | null; rating: number; reasons?: string[]; feedback?: string; userType: string }): Promise<any> {
+    const { data, error } = await supabase
+      .from('reviews')
+      .insert({
+        document_id: review.documentId,
+        user_id: review.userId,
+        browser_id: review.browserId,
+        rating: review.rating,
+        reasons: review.reasons || [],
+        feedback: review.feedback || '',
+        user_type: review.userType
+      })
+      .select()
+      .single();
+
+    if (error) {
+      throw error;
+    }
+
+    return data;
+  }
+
+  async getReviews(): Promise<any[]> {
+    const { data, error } = await supabase
+      .from('reviews')
+      .select('*')
+      .order('created_at', { ascending: false });
+
+    if (error) {
+      throw error;
+    }
+
+    return data || [];
+  }
 }
 
-export const storage = new DatabaseStorage();
+export const storage = new SupabaseStorage();

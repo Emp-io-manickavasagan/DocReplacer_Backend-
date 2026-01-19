@@ -1,83 +1,4 @@
-import mongoose from 'mongoose';
 import { z } from 'zod';
-
-// User Schema
-const userSchema = new mongoose.Schema({
-  email: { type: String, required: true, unique: true },
-  password: { type: String, required: true },
-  name: { type: String, required: true },
-  role: { type: String, default: 'USER', enum: ['USER', 'ADMIN', 'VIP'] },
-  plan: { type: String, default: 'FREE', enum: ['FREE', 'PRO'] },
-  planActivatedAt: { type: Date, default: Date.now },
-  planExpiresAt: { type: Date },
-  monthlyUsage: { type: Number, default: 0 },
-  lastUsageReset: { type: Date, default: Date.now },
-  createdAt: { type: Date, default: Date.now },
-  cancelAtPeriodEnd: { type: Boolean, default: false },
-});
-
-// Document Schema
-const documentSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  name: { type: String, required: true },
-  documentId: { type: String, required: true },
-  originalContent: { type: String }, // JSON string of original paragraphs
-  createdAt: { type: Date, default: Date.now },
-});
-
-// Payment Schema
-const paymentSchema = new mongoose.Schema({
-  userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-  dodoPurchaseId: { type: String, required: true, unique: true },
-  productId: { type: String, required: true },
-  amount: { type: Number, required: true },
-  currency: { type: String, default: 'INR' },
-  status: { type: String, required: true, enum: ['pending', 'completed', 'failed', 'refunded'] },
-  paymentMethod: { type: String },
-  customerEmail: { type: String },
-  subscriptionStartDate: { type: Date },
-  subscriptionEndDate: { type: Date },
-  createdAt: { type: Date, default: Date.now },
-});
-
-// OTP Schema
-const otpSchema = new mongoose.Schema({
-  email: { type: String, required: true },
-  otp: { type: String, required: true },
-  expiresAt: { type: Date, required: true },
-  userData: { type: Object, required: true },
-  createdAt: { type: Date, default: Date.now },
-});
-
-// Guest Usage Schema
-const guestUsageSchema = new mongoose.Schema({
-  browserId: { type: String, required: true, unique: true },
-  count: { type: Number, default: 0 },
-  documents: [{ type: String }], // Array of document IDs
-  firstUsed: { type: Date, default: Date.now },
-  lastUsed: { type: Date, default: Date.now },
-});
-
-// Models
-export const User = mongoose.model('User', userSchema);
-export const Document = mongoose.model('Document', documentSchema);
-export const Payment = mongoose.model('Payment', paymentSchema);
-
-// Review Schema
-const reviewSchema = new mongoose.Schema({
-  documentId: { type: String, required: true },
-  userId: { type: String, default: null }, // null for guest users
-  browserId: { type: String, default: null }, // for guest tracking
-  rating: { type: Number, required: true, min: 1, max: 5 },
-  reasons: [{ type: String }], // Array of reasons for low ratings
-  feedback: { type: String, default: '' }, // Custom feedback text
-  userType: { type: String, enum: ['GUEST', 'FREE', 'PRO', 'VIP'], required: true },
-  createdAt: { type: Date, default: Date.now }
-});
-
-export const Review = mongoose.model('Review', reviewSchema);
-export const OTP = mongoose.model('OTP', otpSchema);
-export const GuestUsage = mongoose.model('GuestUsage', guestUsageSchema);
 
 // Zod schemas for validation
 export const insertUserSchema = z.object({
@@ -87,70 +8,89 @@ export const insertUserSchema = z.object({
 });
 
 export const insertDocumentSchema = z.object({
-  userId: z.string(),
+  user_id: z.string().uuid(),
   name: z.string(),
-  documentId: z.string(),
-  originalContent: z.string().optional(),
+  document_id: z.string(),
+  original_content: z.string().optional(),
 });
 
-// Types
+export const insertPaymentSchema = z.object({
+  user_id: z.string().uuid(),
+  dodo_purchase_id: z.string(),
+  product_id: z.string(),
+  amount: z.number(),
+  status: z.string(),
+});
+
+// Types for Supabase tables
 export type UserType = {
-  _id: string;
+  id: string;
   email: string;
   password: string;
   name: string;
   role: string;
   plan: string;
-  planActivatedAt?: Date;
-  planExpiresAt?: Date;
-  monthlyUsage: number;
-  lastUsageReset: Date;
-  createdAt: Date;
-  cancelAtPeriodEnd: boolean;
+  plan_activated_at?: string | null;
+  plan_expires_at?: string | null;
+  monthly_usage: number;
+  last_usage_reset: string;
+  created_at: string;
+  cancel_at_period_end: boolean;
 };
 
 export type DocumentType = {
-  _id: string;
-  userId: string;
+  id: string;
+  user_id: string;
   name: string;
-  documentId: string;
-  originalContent?: string;
-  createdAt: Date;
+  document_id: string;
+  original_content?: string | null;
+  created_at: string;
 };
 
-export const insertPaymentSchema = z.object({
-  userId: z.string(),
-  dodoPurchaseId: z.string(),
-  productId: z.string(),
-  amount: z.number(),
-  status: z.string(),
-});
-
 export type PaymentType = {
-  _id: string;
-  userId: string;
-  dodoPurchaseId: string;
-  productId: string;
+  id: string;
+  user_id: string;
+  dodo_purchase_id: string;
+  product_id: string;
   amount: number;
   currency: string;
   status: string;
-  paymentMethod?: string;
-  customerEmail?: string;
-  subscriptionStartDate?: Date;
-  subscriptionEndDate?: Date;
-  createdAt: Date;
+  payment_method?: string | null;
+  customer_email?: string | null;
+  subscription_start_date?: string | null;
+  subscription_end_date?: string | null;
+  created_at: string;
+};
+
+export type OTPType = {
+  id: string;
+  email: string;
+  otp: string;
+  expires_at: string;
+  user_data: any;
+  created_at: string;
 };
 
 export type GuestUsageType = {
-  _id: string;
-  browserId: string;
+  id: string;
+  browser_id: string;
   count: number;
   documents: string[];
-  firstUsed: Date;
-  lastUsed: Date;
+  first_used: string;
+  last_used: string;
 };
 
-
+export type ReviewType = {
+  id: string;
+  document_id: string;
+  user_id?: string | null;
+  browser_id?: string | null;
+  rating: number;
+  reasons: string[];
+  feedback: string;
+  user_type: string;
+  created_at: string;
+};
 
 // Paragraph structure for the editor
 export interface DocxParagraph {

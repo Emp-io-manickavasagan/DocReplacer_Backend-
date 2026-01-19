@@ -7,7 +7,7 @@ import { connectDB } from "./db";
 import rateLimit from "express-rate-limit";
 
 // Validate required environment variables
-const requiredEnvVars = ['DATABASE_URL', 'JWT_SECRET'];
+const requiredEnvVars = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'JWT_SECRET'];
 const optionalEnvVars = ['RESEND_API_KEY', 'FRONTEND_URL', 'DODO_PRO_PLAN_LINK'];
 
 for (const envVar of requiredEnvVars) {
@@ -157,7 +157,7 @@ app.use((req, res, next) => {
 
 (async () => {
   try {
-    // Connect to MongoDB
+    // Connect to Supabase
     await connectDB();
 
     await registerRoutes(httpServer, app);
