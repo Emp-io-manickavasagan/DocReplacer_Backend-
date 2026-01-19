@@ -41,3 +41,11 @@ Thumbs.db
 
 # Uploads
 uploads/
+
+# Debug and test files
+debug-*.js
+test-*.js
+check-*.js
+create-*.js
+*-debug.js
+*-test.js

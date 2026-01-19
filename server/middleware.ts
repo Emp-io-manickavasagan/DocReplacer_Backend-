@@ -97,27 +97,27 @@ export const checkPlanLimit = async (req: AuthRequest, res: Response, next: Next
   }
 
   const now = new Date();
-  const planActivatedAt = user.planActivatedAt || user.createdAt;
+  const planActivatedAt = new Date(user.plan_activated_at || user.created_at);
   const daysSincePlanActivation = Math.floor((now.getTime() - planActivatedAt.getTime()) / (1000 * 60 * 60 * 24));
 
   // Check if 30 days have passed since plan activation
   if (daysSincePlanActivation >= 30) {
     // Reset usage and update plan activation date
-    await storage.resetMonthlyUsage(user._id);
+    await storage.resetMonthlyUsage(user.id);
 
     // If PRO plan, downgrade to FREE after 30 days (subscription expired)
     if (user.plan === 'PRO') {
-      await storage.updateUserPlan(user._id, 'FREE');
-      await storage.updatePlanActivationDate(user._id, now);
+      await storage.updateUserPlan(user.id, 'FREE');
+      await storage.updatePlanActivationDate(user.id, now);
     } else {
       // For FREE users, just reset the cycle
-      await storage.updatePlanActivationDate(user._id, now);
+      await storage.updatePlanActivationDate(user.id, now);
     }
 
     // Refresh user data
     const updatedUser = await storage.getUser(req.user.id);
     if (updatedUser) {
-      user.monthlyUsage = updatedUser.monthlyUsage;
+      user.monthly_usage = updatedUser.monthly_usage;
       user.plan = updatedUser.plan;
     }
   }
@@ -134,9 +134,9 @@ export const checkPlanLimit = async (req: AuthRequest, res: Response, next: Next
 
   const limit = limits[user.plan as keyof typeof limits] || 0;
 
-  if (user.monthlyUsage >= limit) {
+  if (user.monthly_usage >= limit) {
     // Calculate days remaining until reset
-    const planActivatedAt = user.planActivatedAt || user.createdAt;
+    const planActivatedAt = new Date(user.plan_activated_at || user.created_at);
     const nextResetDate = new Date(planActivatedAt.getTime() + (30 * 24 * 60 * 60 * 1000)); // 30 days from activation
     const daysUntilReset = Math.ceil((nextResetDate.getTime() - now.getTime()) / (1000 * 60 * 60 * 24));
     

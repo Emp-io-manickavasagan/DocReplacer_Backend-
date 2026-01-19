@@ -91,10 +91,18 @@ ALTER TABLE otps ENABLE ROW LEVEL SECURITY;
 ALTER TABLE guest_usage ENABLE ROW LEVEL SECURITY;
 ALTER TABLE reviews ENABLE ROW LEVEL SECURITY;
 
--- Create RLS policies (these allow service role to access all data)
-CREATE POLICY "Service role can access all users" ON users FOR ALL USING (true);
-CREATE POLICY "Service role can access all documents" ON documents FOR ALL USING (true);
-CREATE POLICY "Service role can access all payments" ON payments FOR ALL USING (true);
-CREATE POLICY "Service role can access all otps" ON otps FOR ALL USING (true);
-CREATE POLICY "Service role can access all guest_usage" ON guest_usage FOR ALL USING (true);
-CREATE POLICY "Service role can access all reviews" ON reviews FOR ALL USING (true);
+-- Drop existing policies if they exist
+DROP POLICY IF EXISTS "Service role can access all users" ON users;
+DROP POLICY IF EXISTS "Service role can access all documents" ON documents;
+DROP POLICY IF EXISTS "Service role can access all payments" ON payments;
+DROP POLICY IF EXISTS "Service role can access all otps" ON otps;
+DROP POLICY IF EXISTS "Service role can access all guest_usage" ON guest_usage;
+DROP POLICY IF EXISTS "Service role can access all reviews" ON reviews;
+
+-- Create RLS policies that allow service role to bypass RLS
+CREATE POLICY "Allow service role full access" ON users FOR ALL TO service_role USING (true) WITH CHECK (true);
+CREATE POLICY "Allow service role full access" ON documents FOR ALL TO service_role USING (true) WITH CHECK (true);
+CREATE POLICY "Allow service role full access" ON payments FOR ALL TO service_role USING (true) WITH CHECK (true);
+CREATE POLICY "Allow service role full access" ON otps FOR ALL TO service_role USING (true) WITH CHECK (true);
+CREATE POLICY "Allow service role full access" ON guest_usage FOR ALL TO service_role USING (true) WITH CHECK (true);
+CREATE POLICY "Allow service role full access" ON reviews FOR ALL TO service_role USING (true) WITH CHECK (true);
