@@ -125,13 +125,20 @@ export function getCacheStats() {
 export function performanceMonitoring(req: Request, res: Response, next: NextFunction) {
   const start = process.hrtime.bigint();
   
-  res.on('finish', () => {
+  // Override the end method to calculate and set header before response is sent
+  const originalEnd = res.end;
+  res.end = function(chunk?: any, encoding?: any, cb?: any) {
     const end = process.hrtime.bigint();
     const duration = Number(end - start) / 1000000; // Convert to milliseconds
     
-    // Add performance header
-    res.setHeader('X-Response-Time', `${duration.toFixed(2)}ms`);
-  });
+    // Set performance header before ending response
+    if (!res.headersSent) {
+      res.setHeader('X-Response-Time', `${duration.toFixed(2)}ms`);
+    }
+    
+    // Call original end method
+    return originalEnd.call(this, chunk, encoding, cb);
+  };
   
   next();
 }
