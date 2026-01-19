@@ -21,13 +21,10 @@ export async function connectDB() {
       .limit(1);
     
     if (error) {
-      console.error('Supabase connection error:', error);
       throw error;
     }
     
-    console.log('✅ Connected to Supabase successfully');
   } catch (error) {
-    console.error('❌ Failed to connect to Supabase:', error);
     process.exit(1);
   }
 }

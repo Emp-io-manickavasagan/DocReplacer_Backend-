@@ -57,7 +57,7 @@ export function cacheMiddleware(duration: number = 300, keyGenerator?: (req: Req
 // Specific cache middleware for different endpoints
 export const cacheStrategies = {
   // Cache user data for 5 minutes
-  userData: cacheMiddleware(CACHE_DURATIONS.USER_DATA, (req) => `user:${req.user?.id}`),
+  userData: cacheMiddleware(CACHE_DURATIONS.USER_DATA, (req) => `user:${(req as any).user?.id}`),
   
   // Cache admin data for 3 minutes
   adminData: cacheMiddleware(CACHE_DURATIONS.ADMIN_DATA, (req) => `admin:${req.originalUrl}`),
@@ -66,10 +66,10 @@ export const cacheStrategies = {
   healthCheck: cacheMiddleware(CACHE_DURATIONS.HEALTH_CHECK, () => 'health'),
   
   // Cache document lists for 10 minutes
-  documents: cacheMiddleware(CACHE_DURATIONS.DOCUMENTS, (req) => `docs:${req.user?.id}`),
+  documents: cacheMiddleware(CACHE_DURATIONS.DOCUMENTS, (req) => `docs:${(req as any).user?.id}`),
   
   // Cache payment data for 5 minutes
-  payments: cacheMiddleware(CACHE_DURATIONS.PAYMENTS, (req) => `payments:${req.user?.id}`),
+  payments: cacheMiddleware(CACHE_DURATIONS.PAYMENTS, (req) => `payments:${(req as any).user?.id}`),
 };
 
 // Cache invalidation helpers
@@ -129,11 +129,6 @@ export function performanceMonitoring(req: Request, res: Response, next: NextFun
     const end = process.hrtime.bigint();
     const duration = Number(end - start) / 1000000; // Convert to milliseconds
     
-    // Log slow requests (> 1000ms)
-    if (duration > 1000) {
-      console.warn(`Slow request: ${req.method} ${req.path} took ${duration.toFixed(2)}ms`);
-    }
-    
     // Add performance header
     res.setHeader('X-Response-Time', `${duration.toFixed(2)}ms`);
   });
@@ -179,8 +174,6 @@ export function memoryCleanup() {
   
   // Clean expired cache entries
   cache.flushStats();
-  
-  console.log('Memory cleanup completed');
 }
 
 // Periodic cleanup (run every 10 minutes)

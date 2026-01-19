@@ -10,234 +10,216 @@ import compression from "compression";
 import { performanceMonitoring } from "./performance";
 import { setupCluster, monitorWorkerMemory } from "./cluster";
 
-// Use clustering in production for better performance
-if (process.env.NODE_ENV === 'production' && process.env.DISABLE_CLUSTER !== 'true') {
-  const shouldStartServer = setupCluster();
-  if (!shouldStartServer) {
-    // This is the master process, exit here
-    process.exit(0);
+// Main server initialization function
+async function startServer() {
+  // Use clustering in production for better performance (but not on cloud platforms)
+  const isCloudPlatform = process.env.RENDER || 
+                         process.env.VERCEL || 
+                         process.env.NETLIFY || 
+                         process.env.RAILWAY_ENVIRONMENT ||
+                         process.env.FLY_APP_NAME ||
+                         process.env.HEROKU_APP_NAME;
+
+  if (process.env.NODE_ENV === 'production' && 
+      process.env.DISABLE_CLUSTER !== 'true' && 
+      !isCloudPlatform) {
+    const shouldStartServer = setupCluster();
+    if (!shouldStartServer) {
+      // This is the master process, don't continue with server setup
+      return; // Exit the function, don't start server in master
+    }
+    // This is a worker process, continue with server setup
+    monitorWorkerMemory();
+  } else if (process.env.NODE_ENV === 'production') {
+    // On cloud platforms, just monitor memory without clustering
+    monitorWorkerMemory();
   }
-  // This is a worker process, continue with server setup
-  monitorWorkerMemory();
-}
 
-// Validate required environment variables
-const requiredEnvVars = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'JWT_SECRET'];
-const optionalEnvVars = ['RESEND_API_KEY', 'FRONTEND_URL', 'DODO_PRO_PLAN_LINK'];
+  // Validate required environment variables
+  const requiredEnvVars = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'JWT_SECRET'];
 
-for (const envVar of requiredEnvVars) {
-  if (!process.env[envVar]) {
-    console.error(`❌ CRITICAL: Required environment variable ${envVar} is not set`);
+  for (const envVar of requiredEnvVars) {
+    if (!process.env[envVar]) {
+      process.exit(1);
+    }
+  }
+
+  // Validate JWT_SECRET strength
+  if (process.env.JWT_SECRET && process.env.JWT_SECRET.length < 32) {
     process.exit(1);
   }
-}
 
-// Warn about missing optional environment variables
-for (const envVar of optionalEnvVars) {
-  if (!process.env[envVar] || process.env[envVar] === `your_${envVar.toLowerCase()}_here`) {
-    console.warn(`⚠️  WARNING: Optional environment variable ${envVar} is not configured`);
-  }
-}
+  const app = express();
+  const httpServer = createServer(app);
 
-// Validate JWT_SECRET strength
-if (process.env.JWT_SECRET && process.env.JWT_SECRET.length < 32) {
-  console.error('❌ CRITICAL: JWT_SECRET must be at least 32 characters long');
-  process.exit(1);
-}
-
-const app = express();
-const httpServer = createServer(app);
-
-// Performance optimizations
-app.use(compression({
-  level: 6, // Good balance between compression and CPU usage
-  threshold: 1024, // Only compress responses > 1KB
-  filter: (req, res) => {
-    // Don't compress if client doesn't support it
-    if (req.headers['x-no-compression']) {
-      return false;
-    }
-    // Use compression for all other responses
-    return compression.filter(req, res);
-  }
-}));
-
-// Performance monitoring
-app.use(performanceMonitoring);
-
-// Security middleware - must be first
-app.use(helmet({
-  contentSecurityPolicy: {
-    directives: {
-      defaultSrc: ["'self'"],
-      styleSrc: ["'self'", "'unsafe-inline'"],
-      scriptSrc: ["'self'"],
-      imgSrc: ["'self'", "data:", "https:"],
-      connectSrc: ["'self'", "https://api.docreplacer.online", "https://docreplacer-backend.onrender.com"],
-      fontSrc: ["'self'"],
-      objectSrc: ["'none'"],
-      mediaSrc: ["'self'"],
-      frameSrc: ["'none'"],
-    },
-  },
-  crossOriginEmbedderPolicy: false, // Allow file downloads
-}));
-
-// Trust proxy for Render deployment
-app.set('trust proxy', 1);
-
-// Optimize Express settings for performance
-app.set('x-powered-by', false); // Remove X-Powered-By header
-app.set('etag', 'strong'); // Enable strong ETags for better caching
-app.set('json spaces', 0); // Minimize JSON output
-
-// Rate limiting - optimized for performance
-const limiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: process.env.NODE_ENV === 'production' ? 500 : 200, // Increased limits for better UX
-  message: { error: 'Too many requests from this IP, please try again later.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-  skip: (req) => {
-    // Skip rate limiting for health checks and static assets
-    return req.path === '/health' || req.path.startsWith('/static/');
-  },
-  // Use memory store for better performance (default)
-  store: undefined
-});
-
-const authLimiter = rateLimit({
-  windowMs: 15 * 60 * 1000, // 15 minutes
-  max: process.env.NODE_ENV === 'production' ? 20 : 10, // Increased for better UX
-  message: { error: 'Too many authentication attempts, please try again later.' },
-  standardHeaders: true,
-  legacyHeaders: false,
-});
-
-app.use('/api/auth', authLimiter);
-app.use('/api', limiter);
-
-app.use((req, res, next) => {
-  const allowedOrigins = process.env.NODE_ENV === 'production'
-    ? [
-      'https://docreplacer.vercel.app',
-      'https://docreplacer-frontend.onrender.com',
-      'https://docreplacer.netlify.app',
-      'https://www.docreplacer.online',
-      'https://docreplacer.online'
-    ]
-    : [
-      'https://www.docreplacer.online',
-      'https://docreplacer.online'
-    ];
-
-  const origin = req.headers.origin;
-
-  // Allow origins based on environment
-  if (allowedOrigins.includes(origin)) {
-    res.header('Access-Control-Allow-Origin', origin);
-  } else {
-    res.header('Access-Control-Allow-Origin', 'https://www.docreplacer.online');
-  }
-
-  res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS');
-  res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Content-Length, X-Requested-With, X-Browser-ID');
-  res.header('Access-Control-Allow-Credentials', 'true');
-
-  // Additional security headers
-  res.header('X-Content-Type-Options', 'nosniff');
-  res.header('X-Frame-Options', 'DENY');
-  res.header('X-XSS-Protection', '1; mode=block');
-  res.header('Referrer-Policy', 'strict-origin-when-cross-origin');
-  res.header('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
-  res.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
-  
-  // Remove server information
-  res.removeHeader('X-Powered-By');
-
-  if (req.method === 'OPTIONS') {
-    res.sendStatus(200);
-  } else {
-    next();
-  }
-});
-
-declare module "http" {
-  interface IncomingMessage {
-    rawBody: unknown;
-  }
-}
-
-app.use(express.json({
-  limit: '10mb',
-  verify: (req, _res, buf) => {
-    req.rawBody = buf;
-  },
-}));
-
-app.use(express.urlencoded({ 
-  extended: false, 
-  limit: '10mb',
-  parameterLimit: 1000 // Limit number of parameters for security and performance
-}));
-
-export function log(message: string, source = "express") {
-  const formattedTime = new Date().toLocaleTimeString("en-US", {
-    hour: "numeric",
-    minute: "2-digit",
-    second: "2-digit",
-    hour12: true,
-  });
-
-  // Only log in development
-  if (process.env.NODE_ENV !== 'production') {
-    console.log(`${formattedTime} [${source}] ${message}`);
-  }
-}
-
-app.use((req, res, next) => {
-  const start = Date.now();
-  const path = req.path;
-  let capturedJsonResponse: Record<string, any> | undefined = undefined;
-
-  const originalResJson = res.json;
-  res.json = function (bodyJson, ...args) {
-    capturedJsonResponse = bodyJson;
-    return originalResJson.apply(res, [bodyJson, ...args]);
-  };
-
-  res.on("finish", () => {
-    const duration = Date.now() - start;
-    if (path.startsWith("/api")) {
-      let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
-      if (capturedJsonResponse) {
-        logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+  // Performance optimizations
+  app.use(compression({
+    level: 6, // Good balance between compression and CPU usage
+    threshold: 1024, // Only compress responses > 1KB
+    filter: (req, res) => {
+      // Don't compress if client doesn't support it
+      if (req.headers['x-no-compression']) {
+        return false;
       }
+      // Use compression for all other responses
+      return compression.filter(req, res);
+    }
+  }));
 
-      log(logLine);
+  // Performance monitoring
+  app.use(performanceMonitoring);
+
+  // Security middleware - must be first
+  app.use(helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        scriptSrc: ["'self'"],
+        imgSrc: ["'self'", "data:", "https:"],
+        connectSrc: ["'self'", "https://api.docreplacer.online", "https://docreplacer-backend.onrender.com"],
+        fontSrc: ["'self'"],
+        objectSrc: ["'none'"],
+        mediaSrc: ["'self'"],
+        frameSrc: ["'none'"],
+      },
+    },
+    crossOriginEmbedderPolicy: false, // Allow file downloads
+  }));
+
+  // Trust proxy for Render deployment
+  app.set('trust proxy', 1);
+
+  // Optimize Express settings for performance
+  app.set('x-powered-by', false); // Remove X-Powered-By header
+  app.set('etag', 'strong'); // Enable strong ETags for better caching
+  app.set('json spaces', 0); // Minimize JSON output
+
+  // Rate limiting - optimized for performance
+  const limiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: process.env.NODE_ENV === 'production' ? 500 : 200, // Increased limits for better UX
+    message: { error: 'Too many requests from this IP, please try again later.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+    skip: (req) => {
+      // Skip rate limiting for health checks and static assets
+      return req.path === '/health' || req.path.startsWith('/static/');
+    },
+    // Use memory store for better performance (default)
+    store: undefined
+  });
+
+  const authLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutes
+    max: process.env.NODE_ENV === 'production' ? 20 : 10, // Increased for better UX
+    message: { error: 'Too many authentication attempts, please try again later.' },
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  app.use('/api/auth', authLimiter);
+  app.use('/api', limiter);
+
+  app.use((req, res, next) => {
+    const allowedOrigins = process.env.NODE_ENV === 'production'
+      ? [
+        'https://docreplacer.vercel.app',
+        'https://docreplacer-frontend.onrender.com',
+        'https://docreplacer.netlify.app',
+        'https://www.docreplacer.online',
+        'https://docreplacer.online'
+      ]
+      : [
+        'https://www.docreplacer.online',
+        'https://docreplacer.online'
+      ];
+
+    const origin = req.headers.origin;
+
+    // Allow origins based on environment
+    if (allowedOrigins.includes(origin)) {
+      res.header('Access-Control-Allow-Origin', origin);
+    } else {
+      res.header('Access-Control-Allow-Origin', 'https://www.docreplacer.online');
+    }
+
+    res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS');
+    res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Content-Length, X-Requested-With, X-Browser-ID');
+    res.header('Access-Control-Allow-Credentials', 'true');
+
+    // Additional security headers
+    res.header('X-Content-Type-Options', 'nosniff');
+    res.header('X-Frame-Options', 'DENY');
+    res.header('X-XSS-Protection', '1; mode=block');
+    res.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.header('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+    res.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    
+    // Remove server information
+    res.removeHeader('X-Powered-By');
+
+    if (req.method === 'OPTIONS') {
+      res.sendStatus(200);
+    } else {
+      next();
     }
   });
 
-  next();
-});
+  app.use(express.json({
+    limit: '10mb',
+    verify: (req, _res, buf) => {
+      req.rawBody = buf;
+    },
+  }));
 
-(async () => {
+  app.use(express.urlencoded({ 
+    extended: false, 
+    limit: '10mb',
+    parameterLimit: 1000 // Limit number of parameters for security and performance
+  }));
+
+  app.use((req, res, next) => {
+    const start = Date.now();
+    const path = req.path;
+    let capturedJsonResponse: Record<string, any> | undefined = undefined;
+
+    const originalResJson = res.json;
+    res.json = function (bodyJson, ...args) {
+      capturedJsonResponse = bodyJson;
+      return originalResJson.apply(res, [bodyJson, ...args]);
+    };
+
+    res.on("finish", () => {
+      const duration = Date.now() - start;
+      if (path.startsWith("/api")) {
+        let logLine = `${req.method} ${path} ${res.statusCode} in ${duration}ms`;
+        if (capturedJsonResponse) {
+          logLine += ` :: ${JSON.stringify(capturedJsonResponse)}`;
+        }
+
+        log(logLine);
+      }
+    });
+
+    next();
+  });
+
   try {
     // Connect to Supabase
     await connectDB();
 
+    // Register routes
     await registerRoutes(httpServer, app);
 
     app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
       const status = err.status || err.statusCode || 500;
       const message = err.message || "Internal Server Error";
-
+      
       res.status(status).json({ message });
     });
 
-    // importantly only setup vite in development and after
-    // setting up all the other routes so the catch-all route
-    // doesn't interfere with the other routes
+    // Setup static file serving in production
     if (process.env.NODE_ENV === "production") {
       serveStatic(app);
     }
@@ -273,4 +255,21 @@ app.use((req, res, next) => {
   } catch (error) {
     process.exit(1);
   }
-})();
+}
+
+// Module declarations
+declare module "http" {
+  interface IncomingMessage {
+    rawBody: unknown;
+  }
+}
+
+// Utility functions
+export function log(message: string, source = "express") {
+  // Silent in production
+}
+
+// Start the server
+startServer().catch((error) => {
+  process.exit(1);
+});

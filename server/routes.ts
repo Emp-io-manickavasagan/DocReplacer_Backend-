@@ -626,7 +626,6 @@ export async function registerRoutes(
         return_url: returnUrl
       });
     } catch (error) {
-      console.error('Payment creation failed:', error);
       res.status(500).json({ error: 'Payment service unavailable' });
     }
   });
@@ -644,7 +643,6 @@ export async function registerRoutes(
       await storage.cancelSubscription(req.user!.id);
       res.json({ success: true, message: 'Subscription cancelled successfully. You will remain PRO until your period ends.' });
     } catch (error) {
-      console.error('Subscription cancellation failed:', error);
       res.status(500).json({ error: 'Failed to cancel subscription' });
     }
   });
@@ -699,7 +697,6 @@ export async function registerRoutes(
         }
 
         if (!user) {
-          console.error('CRITICAL: User not found in DB for payment event:', { userId, metadataEmail, customerEmail: customer?.email });
           return res.status(404).json({ error: 'User not found in database' });
         }
 
@@ -725,7 +722,7 @@ export async function registerRoutes(
         } catch (paymentError: any) {
           // If it's a duplicate key error, we can ignore it as the record already exists
           if (!paymentError.message?.includes('duplicate key')) {
-            console.error('Non-duplicate payment creation error:', paymentError);
+            // Silent error handling
           }
         }
 
@@ -744,14 +741,13 @@ export async function registerRoutes(
         try {
           await storage.updatePaymentStatus(subscriptionId, 'completed', { startDate, endDate });
         } catch (e) {
-          console.warn('Status update warning (item likely already active):', e instanceof Error ? e.message : 'Unknown');
+          // Silent warning handling
         }
 
         try {
           await storage.updateUserPlan(user.id, 'PRO');
           await storage.updateUserPlanExpiration(user.id, endDate);
         } catch (e) {
-          console.error('Plan activation error:', e);
           throw e; // This is a real failure
         }
 
@@ -803,7 +799,6 @@ export async function registerRoutes(
       return res.json({ success: true, action: 'event_logged' });
 
     } catch (error) {
-      console.error('Webhook processing failed:', error);
       return res.status(500).json({
         error: 'Webhook processing failed',
         message: error instanceof Error ? error.message : 'Unknown error'
@@ -1190,7 +1185,6 @@ export async function registerRoutes(
 
       res.json({ success: true, reviewId: review.id });
     } catch (error) {
-      console.error('Review submission error:', error);
       res.status(500).json({ message: "Failed to submit review" });
     }
   });
@@ -1249,7 +1243,6 @@ export async function registerRoutes(
         recentReviews
       });
     } catch (error) {
-      console.error('Analytics fetch error:', error);
       res.status(500).json({ message: "Failed to fetch analytics" });
     }
   });

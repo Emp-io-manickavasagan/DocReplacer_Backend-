@@ -56,7 +56,7 @@ export class SupabaseStorage implements IStorage {
       .lt('plan_expires_at', now);
 
     if (error) {
-      console.error('Error checking expired plans:', error);
+      // Silent error handling
     }
   }
 
