@@ -28,6 +28,12 @@ export const supabase = createClient(
       headers: {
         'apikey': process.env.SUPABASE_SERVICE_ROLE_KEY!
       }
+    },
+    // Performance optimizations
+    realtime: {
+      params: {
+        eventsPerSecond: 10 // Limit realtime events for performance
+      }
     }
   }
 );

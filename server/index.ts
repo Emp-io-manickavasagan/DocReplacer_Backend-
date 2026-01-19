@@ -5,6 +5,21 @@ import { serveStatic } from "./static";
 import { createServer } from "http";
 import { connectDB } from "./db";
 import rateLimit from "express-rate-limit";
+import helmet from "helmet";
+import compression from "compression";
+import { performanceMonitoring } from "./performance";
+import { setupCluster, monitorWorkerMemory } from "./cluster";
+
+// Use clustering in production for better performance
+if (process.env.NODE_ENV === 'production' && process.env.DISABLE_CLUSTER !== 'true') {
+  const shouldStartServer = setupCluster();
+  if (!shouldStartServer) {
+    // This is the master process, exit here
+    process.exit(0);
+  }
+  // This is a worker process, continue with server setup
+  monitorWorkerMemory();
+}
 
 // Validate required environment variables
 const requiredEnvVars = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'JWT_SECRET'];
@@ -33,26 +48,68 @@ if (process.env.JWT_SECRET && process.env.JWT_SECRET.length < 32) {
 const app = express();
 const httpServer = createServer(app);
 
+// Performance optimizations
+app.use(compression({
+  level: 6, // Good balance between compression and CPU usage
+  threshold: 1024, // Only compress responses > 1KB
+  filter: (req, res) => {
+    // Don't compress if client doesn't support it
+    if (req.headers['x-no-compression']) {
+      return false;
+    }
+    // Use compression for all other responses
+    return compression.filter(req, res);
+  }
+}));
+
+// Performance monitoring
+app.use(performanceMonitoring);
+
+// Security middleware - must be first
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      styleSrc: ["'self'", "'unsafe-inline'"],
+      scriptSrc: ["'self'"],
+      imgSrc: ["'self'", "data:", "https:"],
+      connectSrc: ["'self'", "https://api.docreplacer.online", "https://docreplacer-backend.onrender.com"],
+      fontSrc: ["'self'"],
+      objectSrc: ["'none'"],
+      mediaSrc: ["'self'"],
+      frameSrc: ["'none'"],
+    },
+  },
+  crossOriginEmbedderPolicy: false, // Allow file downloads
+}));
+
 // Trust proxy for Render deployment
 app.set('trust proxy', 1);
 
-// Rate limiting - more lenient for production
+// Optimize Express settings for performance
+app.set('x-powered-by', false); // Remove X-Powered-By header
+app.set('etag', 'strong'); // Enable strong ETags for better caching
+app.set('json spaces', 0); // Minimize JSON output
+
+// Rate limiting - optimized for performance
 const limiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: process.env.NODE_ENV === 'production' ? 200 : 100, // Higher limit for production
-  message: 'Too many requests from this IP, please try again later.',
+  max: process.env.NODE_ENV === 'production' ? 500 : 200, // Increased limits for better UX
+  message: { error: 'Too many requests from this IP, please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
   skip: (req) => {
-    // Skip rate limiting for health checks
-    return req.path === '/health';
-  }
+    // Skip rate limiting for health checks and static assets
+    return req.path === '/health' || req.path.startsWith('/static/');
+  },
+  // Use memory store for better performance (default)
+  store: undefined
 });
 
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000, // 15 minutes
-  max: process.env.NODE_ENV === 'production' ? 10 : 5, // Higher limit for production
-  message: 'Too many authentication attempts, please try again later.',
+  max: process.env.NODE_ENV === 'production' ? 20 : 10, // Increased for better UX
+  message: { error: 'Too many authentication attempts, please try again later.' },
   standardHeaders: true,
   legacyHeaders: false,
 });
@@ -87,11 +144,16 @@ app.use((req, res, next) => {
   res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Content-Length, X-Requested-With, X-Browser-ID');
   res.header('Access-Control-Allow-Credentials', 'true');
 
-  // Security headers
+  // Additional security headers
   res.header('X-Content-Type-Options', 'nosniff');
   res.header('X-Frame-Options', 'DENY');
   res.header('X-XSS-Protection', '1; mode=block');
   res.header('Referrer-Policy', 'strict-origin-when-cross-origin');
+  res.header('Permissions-Policy', 'geolocation=(), microphone=(), camera=()');
+  res.header('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  
+  // Remove server information
+  res.removeHeader('X-Powered-By');
 
   if (req.method === 'OPTIONS') {
     res.sendStatus(200);
@@ -113,7 +175,11 @@ app.use(express.json({
   },
 }));
 
-app.use(express.urlencoded({ extended: false, limit: '10mb' }));
+app.use(express.urlencoded({ 
+  extended: false, 
+  limit: '10mb',
+  parameterLimit: 1000 // Limit number of parameters for security and performance
+}));
 
 export function log(message: string, source = "express") {
   const formattedTime = new Date().toLocaleTimeString("en-US", {
@@ -181,6 +247,12 @@ app.use((req, res, next) => {
     // this serves both the API and the client.
     // It is the only port that is not firewalled.
     const port = parseInt(process.env.PORT || "5000", 10);
+
+    // Server optimization settings
+    httpServer.keepAliveTimeout = 65000; // Slightly higher than load balancer timeout
+    httpServer.headersTimeout = 66000; // Should be higher than keepAliveTimeout
+    httpServer.maxHeadersCount = 1000; // Limit headers for security and performance
+    httpServer.timeout = 30000; // 30 second timeout for requests
 
     // Graceful shutdown
     process.on('SIGTERM', () => {

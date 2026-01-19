@@ -9,6 +9,9 @@ import crypto from "crypto";
 import { docxService, fileBufferStore, paragraphMappings, paragraphStyles, documentTimestamps, cleanupExpiredDocuments } from "./docx.service";
 import { authenticateToken, authenticateTokenOrGuest, authorizeRole, checkPlanLimit, generateToken, type AuthRequest } from "./middleware";
 import { sendOTP, generateOTP } from "./email.service";
+import { validateAndSanitize, validationRules, sanitizeInput, validateFileUpload } from "./security";
+import { body } from "express-validator";
+import { cacheStrategies, cacheInvalidation, getCacheStats } from "./performance";
 
 const upload = multer({
   storage: multer.memoryStorage(),
@@ -38,8 +41,8 @@ export async function registerRoutes(
     }
   }, 5000);
 
-  // Health check endpoint
-  app.get('/health', (req, res) => {
+  // Health check endpoint with caching
+  app.get('/health', cacheStrategies.healthCheck, (req, res) => {
     res.json({
       status: 'ok',
       timestamp: new Date().toISOString(),
@@ -48,10 +51,13 @@ export async function registerRoutes(
     });
   });
 
-  app.get('/api/health', async (req, res) => {
+  app.get('/api/health', cacheStrategies.healthCheck, async (req, res) => {
     try {
       const userCount = await storage.getUsers().then(users => users.length);
       const adminCount = await storage.getUsers().then(users => users.filter(u => u.role === 'ADMIN').length);
+      const cacheStats = getCacheStats();
+      const memoryUsage = process.memoryUsage();
+      
       res.json({
         status: 'ok',
         timestamp: new Date().toISOString(),
@@ -61,6 +67,20 @@ export async function registerRoutes(
           connected: true,
           userCount: userCount,
           adminCount: adminCount
+        },
+        performance: {
+          cache: cacheStats,
+          memory: {
+            rss: Math.round(memoryUsage.rss / 1024 / 1024) + 'MB',
+            heapTotal: Math.round(memoryUsage.heapTotal / 1024 / 1024) + 'MB',
+            heapUsed: Math.round(memoryUsage.heapUsed / 1024 / 1024) + 'MB',
+            external: Math.round(memoryUsage.external / 1024 / 1024) + 'MB'
+          },
+          process: {
+            pid: process.pid,
+            version: process.version,
+            platform: process.platform
+          }
         }
       });
     } catch (error: any) {
@@ -78,7 +98,13 @@ export async function registerRoutes(
   });
 
   // Create admin user endpoint (only if no admin exists)
-  app.post('/api/admin/create-first-admin', async (req, res) => {
+  app.post('/api/admin/create-first-admin', 
+    validateAndSanitize([
+      validationRules.email,
+      validationRules.password,
+      validationRules.name
+    ]), 
+    async (req, res) => {
     try {
       const { email, password, name } = req.body;
 
@@ -136,7 +162,13 @@ export async function registerRoutes(
 
 
   // === AUTH ===
-  app.post('/api/auth/send-otp', async (req, res) => {
+  app.post('/api/auth/send-otp', 
+    validateAndSanitize([
+      validationRules.email,
+      validationRules.password,
+      validationRules.name
+    ]), 
+    async (req, res) => {
     try {
       const { email, password, name } = req.body;
 
@@ -189,7 +221,12 @@ export async function registerRoutes(
     }
   });
 
-  app.post('/api/auth/verify-otp', async (req, res) => {
+  app.post('/api/auth/verify-otp', 
+    validateAndSanitize([
+      validationRules.email,
+      validationRules.otp
+    ]), 
+    async (req, res) => {
     try {
       const { email, otp } = req.body;
 
@@ -219,6 +256,9 @@ export async function registerRoutes(
       const hashedPassword = await bcrypt.hash(userData.password, 10);
       const user = await storage.createUser({ ...userData, password: hashedPassword, isVerified: true });
 
+      // Invalidate admin cache since user list changed
+      cacheInvalidation.invalidateAdmin();
+
       await storage.deleteOTP(otpRecord.id);
 
       const token = generateToken({ id: user.id, email: user.email, role: user.role, plan: user.plan });
@@ -228,7 +268,11 @@ export async function registerRoutes(
     }
   });
 
-  app.post('/api/auth/forgot-password', async (req, res) => {
+  app.post('/api/auth/forgot-password', 
+    validateAndSanitize([
+      validationRules.email
+    ]), 
+    async (req, res) => {
     try {
       const { email } = req.body;
 
@@ -267,7 +311,17 @@ export async function registerRoutes(
     }
   });
 
-  app.post('/api/auth/reset-password', async (req, res) => {
+  app.post('/api/auth/reset-password', 
+    validateAndSanitize([
+      validationRules.email,
+      validationRules.otp,
+      body('newPassword')
+        .isLength({ min: 8, max: 128 })
+        .withMessage('New password must be 8-128 characters')
+        .matches(/^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)/)
+        .withMessage('New password must contain uppercase, lowercase, and number')
+    ]), 
+    async (req, res) => {
     try {
       const { email, otp, newPassword } = req.body;
 
@@ -323,6 +377,10 @@ export async function registerRoutes(
         password: hashedPassword,
         name: input.name || input.email.split('@')[0] // Ensure name is always provided
       });
+      
+      // Invalidate admin cache since user list changed
+      cacheInvalidation.invalidateAdmin();
+      
       const token = generateToken({ id: user.id, email: user.email, role: user.role, plan: user.plan });
 
       res.status(201).json({ token, user: { id: user.id, email: user.email, name: user.name || user.email.split('@')[0], role: user.role, plan: user.plan } });
@@ -350,7 +408,7 @@ export async function registerRoutes(
     }
   });
 
-  app.get('/api/user/me', authenticateToken, async (req: AuthRequest, res) => {
+  app.get('/api/user/me', authenticateToken, cacheStrategies.userData, async (req: AuthRequest, res) => {
     // Check for expired plans before returning user data
     await storage.checkExpiredPlans();
 
@@ -373,7 +431,7 @@ export async function registerRoutes(
   });
 
   // === DOCX ===
-  app.post(api.docx.upload.path, authenticateTokenOrGuest, upload.single('file'), async (req: AuthRequest, res) => {
+  app.post(api.docx.upload.path, authenticateTokenOrGuest, upload.single('file'), validateFileUpload, async (req: AuthRequest, res) => {
     if (!req.file) {
       return res.status(400).json({ message: "No file uploaded" });
     }
@@ -429,7 +487,12 @@ export async function registerRoutes(
     }
   });
 
-  app.post(api.docx.export.path, authenticateTokenOrGuest, checkPlanLimit, async (req: AuthRequest, res) => {
+  app.post(api.docx.export.path, authenticateTokenOrGuest, checkPlanLimit, 
+    validateAndSanitize([
+      validationRules.documentId,
+      validationRules.paragraphs
+    ]), 
+    async (req: AuthRequest, res) => {
     try {
       const { documentId, paragraphs } = req.body;
 
@@ -492,8 +555,8 @@ export async function registerRoutes(
     }
   });
 
-  // Get user documents
-  app.get('/api/user/documents', authenticateToken, async (req: AuthRequest, res) => {
+  // Get user documents with caching
+  app.get('/api/user/documents', authenticateToken, cacheStrategies.documents, async (req: AuthRequest, res) => {
     try {
       const documents = await storage.getUserDocuments(req.user!.id);
       res.json(documents);
@@ -507,6 +570,9 @@ export async function registerRoutes(
     try {
       const { documentId } = req.params;
       await storage.deleteDocument(req.user!.id, documentId);
+
+      // Invalidate user's document cache
+      cacheInvalidation.invalidateUser(req.user!.id);
 
       // Clean up memory stores
       fileBufferStore.delete(documentId);
@@ -800,12 +866,16 @@ export async function registerRoutes(
       }
 
       await storage.updateUserProfile(req.user!.id, { name: sanitizedName });
+      
+      // Invalidate user cache
+      cacheInvalidation.invalidateUser(req.user!.id);
+      
       res.json({ message: 'Profile updated successfully' });
     } catch (error) {
       res.status(500).json({ error: 'Failed to update profile' });
     }
   });
-  app.get('/api/user/payments', authenticateToken, async (req: AuthRequest, res) => {
+  app.get('/api/user/payments', authenticateToken, cacheStrategies.payments, async (req: AuthRequest, res) => {
     try {
       const payments = await storage.getPaymentsByUserId(req.user!.id);
       res.json(payments);
@@ -815,7 +885,7 @@ export async function registerRoutes(
   });
 
   // === ADMIN ===
-  app.get(api.admin.users.path, authenticateToken, authorizeRole(['ADMIN']), async (req: AuthRequest, res) => {
+  app.get(api.admin.users.path, authenticateToken, authorizeRole(['ADMIN']), cacheStrategies.adminData, async (req: AuthRequest, res) => {
     try {
       const users = await storage.getUsers();
 
@@ -896,7 +966,9 @@ export async function registerRoutes(
   });
 
   // Admin get user transactions
-  app.get('/api/admin/user/:id/transactions', authenticateToken, authorizeRole(['ADMIN']), async (req: AuthRequest, res) => {
+  app.get('/api/admin/user/:id/transactions', authenticateToken, authorizeRole(['ADMIN']), 
+    validateAndSanitize([validationRules.uuid]), 
+    async (req: AuthRequest, res) => {
     const userId = req.params.id;
     // Validate UUID format
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -913,7 +985,9 @@ export async function registerRoutes(
   });
 
   // Admin toggle VIP status
-  app.put('/api/admin/user/:id/toggle-vip', authenticateToken, authorizeRole(['ADMIN']), async (req: AuthRequest, res) => {
+  app.put('/api/admin/user/:id/toggle-vip', authenticateToken, authorizeRole(['ADMIN']), 
+    validateAndSanitize([validationRules.uuid]), 
+    async (req: AuthRequest, res) => {
     const userId = req.params.id;
     const { isVip } = req.body;
 
@@ -921,6 +995,11 @@ export async function registerRoutes(
     const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
     if (!uuidRegex.test(userId)) {
       return res.status(400).json({ error: 'Invalid user ID' });
+    }
+
+    // Prevent admin from changing their own VIP status
+    if (userId === req.user!.id) {
+      return res.status(400).json({ error: 'Cannot change your own VIP status' });
     }
 
     try {
@@ -938,7 +1017,12 @@ export async function registerRoutes(
 
   // Keep this for backward compatibility or for specific admin actions, 
   // but remove Pro from allowed plans if we want to force VIP for manual gifting.
-  app.put(api.admin.updatePlan.path, authenticateToken, authorizeRole(['ADMIN']), async (req: AuthRequest, res) => {
+  app.put(api.admin.updatePlan.path, authenticateToken, authorizeRole(['ADMIN']), 
+    validateAndSanitize([
+      validationRules.uuid,
+      validationRules.plan
+    ]), 
+    async (req: AuthRequest, res) => {
     const { plan } = req.body;
     const userId = req.params.id;
 
@@ -954,11 +1038,21 @@ export async function registerRoutes(
       return res.status(400).json({ error: 'Invalid user ID' });
     }
 
+    // Prevent admin from changing their own plan
+    if (userId === req.user!.id) {
+      return res.status(400).json({ error: 'Cannot change your own plan' });
+    }
+
     await storage.updateUserPlan(userId, plan);
     res.json({ success: true });
   });
 
-  app.put('/api/admin/user/:id/role', authenticateToken, authorizeRole(['ADMIN']), async (req: AuthRequest, res) => {
+  app.put('/api/admin/user/:id/role', authenticateToken, authorizeRole(['ADMIN']), 
+    validateAndSanitize([
+      validationRules.uuid,
+      validationRules.role
+    ]), 
+    async (req: AuthRequest, res) => {
     const { role } = req.body;
     const userId = req.params.id;
 
@@ -982,7 +1076,9 @@ export async function registerRoutes(
     res.json({ success: true });
   });
 
-  app.put('/api/admin/user/:id/reset-usage', authenticateToken, authorizeRole(['ADMIN']), async (req: AuthRequest, res) => {
+  app.put('/api/admin/user/:id/reset-usage', authenticateToken, authorizeRole(['ADMIN']), 
+    validateAndSanitize([validationRules.uuid]), 
+    async (req: AuthRequest, res) => {
     const userId = req.params.id;
 
     // Validate UUID format
@@ -991,11 +1087,18 @@ export async function registerRoutes(
       return res.status(400).json({ error: 'Invalid user ID' });
     }
 
+    // Prevent admin from resetting their own usage (optional protection)
+    if (userId === req.user!.id) {
+      return res.status(400).json({ error: 'Cannot reset your own usage' });
+    }
+
     await storage.resetMonthlyUsage(userId);
     res.json({ success: true });
   });
 
-  app.delete('/api/admin/user/:id', authenticateToken, authorizeRole(['ADMIN']), async (req: AuthRequest, res) => {
+  app.delete('/api/admin/user/:id', authenticateToken, authorizeRole(['ADMIN']), 
+    validateAndSanitize([validationRules.uuid]), 
+    async (req: AuthRequest, res) => {
     const userId = req.params.id;
 
     // Validate UUID format
@@ -1046,7 +1149,13 @@ export async function registerRoutes(
   });
 
   // === REVIEWS ===
-  app.post('/api/review/submit', authenticateTokenOrGuest, async (req: AuthRequest, res) => {
+  app.post('/api/review/submit', authenticateTokenOrGuest, 
+    validateAndSanitize([
+      validationRules.rating,
+      validationRules.feedback,
+      validationRules.reasons
+    ]), 
+    async (req: AuthRequest, res) => {
     try {
       const { documentId, rating, reasons, feedback } = req.body;
 

@@ -49,3 +49,8 @@ check-*.js
 create-*.js
 *-debug.js
 *-test.js
+
+# Security documentation (keep internal)
+SECURITY_AUDIT.md
+ADMIN_SECURITY.md
+PERFORMANCE_OPTIMIZATION.md

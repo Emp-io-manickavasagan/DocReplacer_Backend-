@@ -285,9 +285,10 @@ export class SupabaseStorage implements IStorage {
   async getUserDocuments(userId: string): Promise<DocumentType[]> {
     const { data, error } = await supabase
       .from('documents')
-      .select('*')
+      .select('id, name, document_id, created_at') // Select only needed fields, exclude large content
       .eq('user_id', userId)
-      .order('created_at', { ascending: false });
+      .order('created_at', { ascending: false })
+      .limit(100); // Limit for performance
 
     if (error) {
       throw error;
@@ -383,8 +384,9 @@ export class SupabaseStorage implements IStorage {
   async getUsers(): Promise<UserType[]> {
     const { data, error } = await supabase
       .from('users')
-      .select('*')
-      .order('created_at', { ascending: false });
+      .select('id, email, name, role, plan, monthly_usage, plan_activated_at, created_at, plan_expires_at, cancel_at_period_end') // Select only needed fields
+      .order('created_at', { ascending: false })
+      .limit(1000); // Limit results for performance
 
     if (error) {
       throw error;
