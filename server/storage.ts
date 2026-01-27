@@ -61,33 +61,49 @@ export class SupabaseStorage implements IStorage {
   }
 
   async getUser(id: string): Promise<UserType | null> {
-    const { data, error } = await supabase
-      .from('users')
-      .select('*')
-      .eq('id', id)
-      .single();
+    try {
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .eq('id', id)
+        .single()
+        .abortSignal(AbortSignal.timeout(5000)); // 5 second timeout
 
-    if (error) {
-      if (error.code === 'PGRST116') return null; // No rows returned
+      if (error) {
+        if (error.code === 'PGRST116') return null; // No rows returned
+        throw error;
+      }
+
+      return data;
+    } catch (error: any) {
+      if (error.name === 'AbortError') {
+        throw new Error('Database query timeout');
+      }
       throw error;
     }
-
-    return data;
   }
 
   async getUserByEmail(email: string): Promise<UserType | null> {
-    const { data, error } = await supabase
-      .from('users')
-      .select('*')
-      .eq('email', email)
-      .single();
+    try {
+      const { data, error } = await supabase
+        .from('users')
+        .select('*')
+        .eq('email', email)
+        .single()
+        .abortSignal(AbortSignal.timeout(5000)); // 5 second timeout for login queries
 
-    if (error) {
-      if (error.code === 'PGRST116') return null; // No rows returned
+      if (error) {
+        if (error.code === 'PGRST116') return null; // No rows returned
+        throw error;
+      }
+
+      return data;
+    } catch (error: any) {
+      if (error.name === 'AbortError') {
+        throw new Error('Database query timeout');
+      }
       throw error;
     }
-
-    return data;
   }
 
   async createUser(insertUser: { email: string; password: string; name: string; role?: string; isVerified?: boolean }): Promise<UserType> {

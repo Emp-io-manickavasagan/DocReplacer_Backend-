@@ -27,6 +27,12 @@ export const supabase = createClient(
     global: {
       headers: {
         'apikey': process.env.SUPABASE_SERVICE_ROLE_KEY!
+      },
+      fetch: (url, options = {}) => {
+        return fetch(url, {
+          ...options,
+          signal: AbortSignal.timeout(10000), // 10 second timeout for all DB operations
+        });
       }
     },
     // Performance optimizations

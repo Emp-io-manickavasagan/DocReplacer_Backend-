@@ -51,22 +51,51 @@ export async function registerRoutes(
     });
   });
 
+  // Enhanced health check for debugging
   app.get('/api/health', cacheStrategies.healthCheck, async (req, res) => {
     try {
-      const userCount = await storage.getUsers().then(users => users.length);
-      const adminCount = await storage.getUsers().then(users => users.filter(u => u.role === 'ADMIN').length);
+      // Add CORS headers explicitly for debugging
+      res.header('Access-Control-Allow-Origin', req.headers.origin || 'https://www.docreplacer.online');
+      res.header('Access-Control-Allow-Methods', 'GET,PUT,POST,DELETE,OPTIONS');
+      res.header('Access-Control-Allow-Headers', 'Content-Type, Authorization, Content-Length, X-Requested-With, X-Browser-ID');
+      
+      // Test database connectivity with timeout
+      let dbConnected = false;
+      let dbError = null;
+      
+      try {
+        const { data: testQuery, error } = await supabase
+          .from('users')
+          .select('count')
+          .limit(1)
+          .abortSignal(AbortSignal.timeout(3000));
+        
+        dbConnected = !error;
+        dbError = error;
+      } catch (dbErr: any) {
+        dbConnected = false;
+        dbError = dbErr;
+      }
+
+      const userCount = dbConnected ? await storage.getUsers().then(users => users.length).catch(() => 0) : 0;
+      const adminCount = dbConnected ? await storage.getUsers().then(users => users.filter(u => u.role === 'ADMIN').length).catch(() => 0) : 0;
       const cacheStats = getCacheStats();
       const memoryUsage = process.memoryUsage();
       
-      res.json({
-        status: 'ok',
+      const healthData = {
+        status: dbConnected ? 'ok' : 'degraded',
         timestamp: new Date().toISOString(),
         uptime: process.uptime(),
         environment: process.env.NODE_ENV,
+        server: {
+          platform: process.platform,
+          nodeVersion: process.version
+        },
         database: {
-          connected: true,
+          connected: dbConnected,
           userCount: userCount,
-          adminCount: adminCount
+          adminCount: adminCount,
+          error: dbError ? 'Database connection error' : null
         },
         performance: {
           cache: cacheStats,
@@ -75,14 +104,11 @@ export async function registerRoutes(
             heapTotal: Math.round(memoryUsage.heapTotal / 1024 / 1024) + 'MB',
             heapUsed: Math.round(memoryUsage.heapUsed / 1024 / 1024) + 'MB',
             external: Math.round(memoryUsage.external / 1024 / 1024) + 'MB'
-          },
-          process: {
-            pid: process.pid,
-            version: process.version,
-            platform: process.platform
           }
         }
-      });
+      };
+      
+      res.json(healthData);
     } catch (error: any) {
       res.json({
         status: 'error',
@@ -91,7 +117,11 @@ export async function registerRoutes(
         environment: process.env.NODE_ENV,
         database: {
           connected: false,
-          error: error?.message || 'Unknown error'
+          error: 'Service unavailable'
+        },
+        server: {
+          platform: process.platform,
+          nodeVersion: process.version
         }
       });
     }
@@ -394,40 +424,73 @@ export async function registerRoutes(
 
   app.post(api.auth.login.path, async (req, res) => {
     try {
+      // Set response timeout
+      req.setTimeout(25000, () => {
+        res.status(408).json({ message: "Request timeout" });
+      });
+
       const input = api.auth.login.input.parse(req.body);
+      
       const user = await storage.getUserByEmail(input.email);
 
-      if (!user || !(await bcrypt.compare(input.password, user.password))) {
+      if (!user) {
+        return res.status(401).json({ message: "Invalid credentials" });
+      }
+
+      const isValidPassword = await bcrypt.compare(input.password, user.password);
+
+      if (!isValidPassword) {
         return res.status(401).json({ message: "Invalid credentials" });
       }
 
       const token = generateToken({ id: user.id, email: user.email, role: user.role, plan: user.plan });
-      res.status(200).json({ token, user: { id: user.id, email: user.email, name: user.name || user.email.split('@')[0], role: user.role, plan: user.plan } });
+      
+      res.status(200).json({ 
+        token, 
+        user: { 
+          id: user.id, 
+          email: user.email, 
+          name: user.name || user.email.split('@')[0], 
+          role: user.role, 
+          plan: user.plan 
+        } 
+      });
     } catch (err) {
       res.status(500).json({ message: "Internal server error" });
     }
   });
 
   app.get('/api/user/me', authenticateToken, cacheStrategies.userData, async (req: AuthRequest, res) => {
-    // Check for expired plans before returning user data
-    await storage.checkExpiredPlans();
+    try {
+      // Set response timeout
+      req.setTimeout(20000, () => {
+        res.status(408).json({ message: "Request timeout" });
+      });
 
-    const user = await storage.getUser(req.user!.id);
-    if (!user) return res.status(401).json({ message: "Unauthorized" });
+      // Skip expensive expired plans check for faster response
+      // This will be handled by periodic background job instead
+      
+      const user = await storage.getUser(req.user!.id);
+      if (!user) {
+        return res.status(401).json({ message: "Unauthorized" });
+      }
 
-    res.json({
-      id: user.id,
-      email: user.email,
-      name: user.name || user.email.split('@')[0], // Fallback to email prefix if name is missing
-      role: user.role,
-      plan: user.plan,
-      monthlyUsage: user.monthly_usage || 0,
-      planActivatedAt: user.plan_activated_at,
-      createdAt: user.created_at,
-      planExpiresAt: user.plan_expires_at,
-      cancelAtPeriodEnd: user.cancel_at_period_end || false,
-      subscription: null
-    });
+      res.json({
+        id: user.id,
+        email: user.email,
+        name: user.name || user.email.split('@')[0], // Fallback to email prefix if name is missing
+        role: user.role,
+        plan: user.plan,
+        monthlyUsage: user.monthly_usage || 0,
+        planActivatedAt: user.plan_activated_at,
+        createdAt: user.created_at,
+        planExpiresAt: user.plan_expires_at,
+        cancelAtPeriodEnd: user.cancel_at_period_end || false,
+        subscription: null
+      });
+    } catch (err) {
+      res.status(500).json({ message: "Internal server error" });
+    }
   });
 
   // === DOCX ===
