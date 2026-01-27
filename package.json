@@ -6,8 +6,10 @@
   "scripts": {
     "dev": "set NODE_ENV=development && nodemon --exec tsx server/index.ts",
     "build": "tsx script/build.ts",
-    "start": "node dist/index.cjs",
-    "check": "tsc"
+    "start": "node startup-check.js && node dist/index.cjs",
+    "start:direct": "node dist/index.cjs",
+    "check": "tsc",
+    "verify": "node startup-check.js"
   },
   "dependencies": {
     "@hookform/resolvers": "^3.10.0",

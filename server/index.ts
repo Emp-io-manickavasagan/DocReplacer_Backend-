@@ -12,80 +12,94 @@ import { setupCluster, monitorWorkerMemory } from "./cluster";
 
 // Main server initialization function
 async function startServer() {
-  // Use clustering in production for better performance (but not on cloud platforms)
-  const isCloudPlatform = process.env.RENDER || 
-                         process.env.VERCEL || 
-                         process.env.NETLIFY || 
-                         process.env.RAILWAY_ENVIRONMENT ||
-                         process.env.FLY_APP_NAME ||
-                         process.env.HEROKU_APP_NAME;
+  try {
+    console.log('🚀 Starting server initialization...');
+    
+    // Use clustering in production for better performance (but not on cloud platforms)
+    const isCloudPlatform = process.env.RENDER || 
+                           process.env.VERCEL || 
+                           process.env.NETLIFY || 
+                           process.env.RAILWAY_ENVIRONMENT ||
+                           process.env.FLY_APP_NAME ||
+                           process.env.HEROKU_APP_NAME;
 
-  if (process.env.NODE_ENV === 'production' && 
-      process.env.DISABLE_CLUSTER !== 'true' && 
-      !isCloudPlatform) {
-    const shouldStartServer = setupCluster();
-    if (!shouldStartServer) {
-      // This is the master process, don't continue with server setup
-      return; // Exit the function, don't start server in master
-    }
-    // This is a worker process, continue with server setup
-    monitorWorkerMemory();
-  } else if (process.env.NODE_ENV === 'production') {
-    // On cloud platforms, just monitor memory without clustering
-    monitorWorkerMemory();
-  }
+    console.log(`📍 Environment: ${process.env.NODE_ENV}, Cloud Platform: ${isCloudPlatform ? 'Yes' : 'No'}`);
 
-  // Validate required environment variables
-  const requiredEnvVars = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'JWT_SECRET'];
-
-  for (const envVar of requiredEnvVars) {
-    if (!process.env[envVar]) {
-      process.exit(1);
-    }
-  }
-
-  // Validate JWT_SECRET strength
-  if (process.env.JWT_SECRET && process.env.JWT_SECRET.length < 32) {
-    process.exit(1);
-  }
-
-  const app = express();
-  const httpServer = createServer(app);
-
-  // Performance optimizations
-  app.use(compression({
-    level: 6, // Good balance between compression and CPU usage
-    threshold: 1024, // Only compress responses > 1KB
-    filter: (req, res) => {
-      // Don't compress if client doesn't support it
-      if (req.headers['x-no-compression']) {
-        return false;
+    if (process.env.NODE_ENV === 'production' && 
+        process.env.DISABLE_CLUSTER !== 'true' && 
+        !isCloudPlatform) {
+      const shouldStartServer = setupCluster();
+      if (!shouldStartServer) {
+        // This is the master process, don't continue with server setup
+        console.log('🔧 Master process started, workers will handle requests');
+        return; // Exit the function, don't start server in master
       }
-      // Use compression for all other responses
-      return compression.filter(req, res);
+      // This is a worker process, continue with server setup
+      console.log('👷 Worker process starting...');
+      monitorWorkerMemory();
+    } else if (process.env.NODE_ENV === 'production') {
+      // On cloud platforms, just monitor memory without clustering
+      console.log('☁️ Cloud platform detected, starting single process');
+      monitorWorkerMemory();
     }
-  }));
 
-  // Performance monitoring
-  app.use(performanceMonitoring);
+    // Validate required environment variables
+    console.log('🔍 Validating environment variables...');
+    const requiredEnvVars = ['SUPABASE_URL', 'SUPABASE_SERVICE_ROLE_KEY', 'JWT_SECRET'];
 
-  // Security middleware - must be first
-  app.use(helmet({
-    contentSecurityPolicy: {
-      directives: {
-        defaultSrc: ["'self'"],
-        styleSrc: ["'self'", "'unsafe-inline'"],
-        scriptSrc: ["'self'"],
-        imgSrc: ["'self'", "data:", "https:"],
-        connectSrc: ["'self'", "https://api.docreplacer.online", "https://docreplacer-backend.onrender.com"],
-        fontSrc: ["'self'"],
-        objectSrc: ["'none'"],
-        mediaSrc: ["'self'"],
-        frameSrc: ["'none'"],
+    for (const envVar of requiredEnvVars) {
+      if (!process.env[envVar]) {
+        console.error(`❌ Missing required environment variable: ${envVar}`);
+        process.exit(1);
+      }
+    }
+    console.log('✅ Environment variables validated');
+
+    // Validate JWT_SECRET strength
+    if (process.env.JWT_SECRET && process.env.JWT_SECRET.length < 32) {
+      console.error('❌ JWT_SECRET must be at least 32 characters long');
+      process.exit(1);
+    console.log('✅ JWT_SECRET validated');
+
+    console.log('🏗️ Creating Express app...');
+    const app = express();
+    const httpServer = createServer(app);
+
+    console.log('⚡ Setting up middleware...');
+    // Performance optimizations
+    app.use(compression({
+      level: 6, // Good balance between compression and CPU usage
+      threshold: 1024, // Only compress responses > 1KB
+      filter: (req, res) => {
+        // Don't compress if client doesn't support it
+        if (req.headers['x-no-compression']) {
+          return false;
+        }
+        // Use compression for all other responses
+        return compression.filter(req, res);
+      }
+    }));
+
+    // Performance monitoring
+    app.use(performanceMonitoring);
+
+    // Security middleware - must be first
+    app.use(helmet({
+      contentSecurityPolicy: {
+        directives: {
+          defaultSrc: ["'self'"],
+          styleSrc: ["'self'", "'unsafe-inline'"],
+          scriptSrc: ["'self'"],
+          imgSrc: ["'self'", "data:", "https:"],
+          connectSrc: ["'self'", "https://api.docreplacer.online", "https://docreplacer-backend.onrender.com"],
+          fontSrc: ["'self'"],
+          objectSrc: ["'none'"],
+          mediaSrc: ["'self'"],
+          frameSrc: ["'none'"],
+        },
       },
-    },
-    crossOriginEmbedderPolicy: false, // Allow file downloads
-  }));
+      crossOriginEmbedderPolicy: false, // Allow file downloads
+    }));
 
   // Trust proxy for Render deployment
   app.set('trust proxy', 1);
@@ -206,21 +220,37 @@ async function startServer() {
   });
 
   try {
+    console.log('🔌 Connecting to database...');
     // Connect to Supabase
     await connectDB();
+    console.log('✅ Database connected successfully');
 
+    console.log('🛣️ Registering routes...');
+    // Add immediate health check before other routes
+    app.get('/health', (req, res) => {
+      res.json({
+        status: 'ok',
+        timestamp: new Date().toISOString(),
+        uptime: process.uptime(),
+        environment: process.env.NODE_ENV || 'development'
+      });
+    });
+    
     // Register routes
     await registerRoutes(httpServer, app);
+    console.log('✅ Routes registered successfully');
 
     app.use((err: any, _req: Request, res: Response, _next: NextFunction) => {
       const status = err.status || err.statusCode || 500;
       const message = err.message || "Internal Server Error";
       
+      console.error('❌ Express error handler:', { status, message: err.message });
       res.status(status).json({ message });
     });
 
     // Setup static file serving in production
     if (process.env.NODE_ENV === "production") {
+      console.log('📁 Setting up static file serving...');
       serveStatic(app);
     }
 
@@ -229,6 +259,7 @@ async function startServer() {
     // this serves both the API and the client.
     // It is the only port that is not firewalled.
     const port = parseInt(process.env.PORT || "5000", 10);
+    console.log(`🚀 Starting server on port ${port}...`);
 
     // Server optimization settings
     httpServer.keepAliveTimeout = 65000; // Slightly higher than load balancer timeout
@@ -238,21 +269,39 @@ async function startServer() {
 
     // Graceful shutdown
     process.on('SIGTERM', () => {
+      console.log('📴 Received SIGTERM, shutting down gracefully...');
       httpServer.close(() => {
+        console.log('✅ Server closed');
         process.exit(0);
       });
     });
 
     process.on('SIGINT', () => {
+      console.log('📴 Received SIGINT, shutting down gracefully...');
       httpServer.close(() => {
+        console.log('✅ Server closed');
         process.exit(0);
       });
     });
 
     httpServer.listen(port, "0.0.0.0", () => {
+      console.log(`🎉 Server successfully started on port ${port}`);
+      console.log(`🌐 Server is ready to accept connections`);
       log(`serving on port ${port}`);
+      
+      // Signal successful startup
+      if (process.send) {
+        process.send('server-started');
+      }
     });
   } catch (error) {
+    console.error('💥 Fatal error during server startup:', error);
+    console.error('Stack trace:', error instanceof Error ? error.stack : 'No stack trace available');
+    process.exit(1);
+  }
+  } catch (error) {
+    console.error('💥 Fatal error in startServer function:', error);
+    console.error('Stack trace:', error instanceof Error ? error.stack : 'No stack trace available');
     process.exit(1);
   }
 }
@@ -266,10 +315,50 @@ declare module "http" {
 
 // Utility functions
 export function log(message: string, source = "express") {
-  // Silent in production
+  // Always log in development, silent in production unless it's a startup message
+  if (process.env.NODE_ENV !== 'production' || message.includes('serving on port')) {
+    console.log(`[${source}] ${message}`);
+  }
 }
 
 // Start the server
 startServer().catch((error) => {
+  console.error('💥 Failed to start server:', error);
+  console.error('Stack trace:', error instanceof Error ? error.stack : 'No stack trace available');
   process.exit(1);
+});
+
+// Add startup timeout to prevent hanging
+const startupTimeout = setTimeout(() => {
+  console.error('💥 Server startup timeout (60s) - forcing exit');
+  process.exit(1);
+}, 60000); // 60 second timeout
+
+// Clear timeout once server starts successfully
+process.on('message', (msg) => {
+  if (msg === 'server-started') {
+    clearTimeout(startupTimeout);
+  }
+});
+
+// Handle unhandled promise rejections
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('💥 Unhandled Promise Rejection:', reason);
+  console.error('Promise:', promise);
+  process.exit(1);
+});
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+  console.error('💥 Uncaught Exception:', error);
+  console.error('Stack trace:', error.stack);
+  process.exit(1);
+});
+
+// Handle warnings
+process.on('warning', (warning) => {
+  console.warn('⚠️ Warning:', warning.message);
+  if (warning.stack) {
+    console.warn('Stack trace:', warning.stack);
+  }
 });

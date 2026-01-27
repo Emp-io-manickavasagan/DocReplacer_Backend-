@@ -14,18 +14,33 @@ if (!process.env.SUPABASE_SERVICE_ROLE_KEY) {
 
 export async function connectDB() {
   try {
-    // Test the connection by making a simple query
+    console.log('🔍 Testing database connection...');
+    
+    // Test the connection by making a simple query with timeout
     const { data, error } = await supabase
       .from('users')
       .select('count')
-      .limit(1);
+      .limit(1)
+      .abortSignal(AbortSignal.timeout(10000)); // 10 second timeout
     
     if (error) {
+      console.error('❌ Database connection test failed:', error.message);
       throw error;
     }
     
+    console.log('✅ Database connection test successful');
+    
   } catch (error) {
-    process.exit(1);
+    if (error instanceof Error) {
+      if (error.name === 'AbortError') {
+        console.error('❌ Database connection timeout (>10s)');
+      } else {
+        console.error('❌ Database connection error:', error.message);
+      }
+    } else {
+      console.error('❌ Unknown database connection error:', error);
+    }
+    throw error; // Re-throw to be caught by the main error handler
   }
 }
 
