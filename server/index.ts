@@ -299,11 +299,6 @@ async function startServer() {
     console.error('Stack trace:', error instanceof Error ? error.stack : 'No stack trace available');
     process.exit(1);
   }
-  } catch (error) {
-    console.error('💥 Fatal error in startServer function:', error);
-    console.error('Stack trace:', error instanceof Error ? error.stack : 'No stack trace available');
-    process.exit(1);
-  }
 }
 
 // Module declarations
