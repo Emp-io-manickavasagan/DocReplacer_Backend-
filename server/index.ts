@@ -1,5 +1,6 @@
 import "dotenv/config";
 import express, { type Request, Response, NextFunction } from "express";
+import cors from "cors";
 import { registerRoutes } from "./routes";
 import { serveStatic } from "./static";
 import { createServer } from "http";
@@ -80,6 +81,18 @@ async function startServer() {
     console.log("🏗️ Creating Express app...");
     const app = express();
     const httpServer = createServer(app);
+
+    // CORS configuration - Allow all origins for testing
+    app.use(cors({
+      origin: true, // Allow all origins
+      credentials: true,
+      methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+      allowedHeaders: ['Content-Type', 'Authorization', 'X-Browser-ID', 'X-Requested-With'],
+      optionsSuccessStatus: 200
+    }));
+
+    // Handle preflight requests explicitly
+    app.options('*', cors());
 
     app.use(
       compression({
