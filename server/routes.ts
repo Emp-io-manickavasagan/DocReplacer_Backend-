@@ -545,8 +545,22 @@ export async function registerRoutes(
       }
 
       res.json({ documentId, paragraphs: result.nodes, isGuest: req.isGuest });
-    } catch (err) {
-      res.status(500).json({ message: "Failed to parse DOCX" });
+    } catch (err: any) {
+      console.error('DOCX parsing error:', err);
+      
+      // Provide more specific error messages
+      if (err.message?.includes('document.xml missing')) {
+        return res.status(400).json({ message: "Invalid DOCX file: missing document structure" });
+      }
+      
+      if (err.message?.includes('zip')) {
+        return res.status(400).json({ message: "Invalid DOCX file: corrupted or not a valid DOCX" });
+      }
+      
+      res.status(500).json({ 
+        message: "Failed to parse DOCX file. Please ensure it's a valid Microsoft Word document.",
+        details: process.env.NODE_ENV === 'development' ? err.message : undefined
+      });
     }
   });
 

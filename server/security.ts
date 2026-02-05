@@ -89,7 +89,7 @@ export const validationRules = {
   name: body('name')
     .isLength({ min: 1, max: 100 })
     .withMessage('Name must be 1-100 characters')
-    .matches(/^[a-zA-Z0-9\s\-_.]+$/)
+    .matches(/^[a-zA-Z0-9\s\-_.'àáâäãåąčćęèéêëėįìíîïłńòóôöõøùúûüųūÿýżźñçčšžÀÁÂÄÃÅĄĆČĖĘÈÉÊËÌÍÎÏĮŁŃÒÓÔÖÕØÙÚÛÜŲŪŸÝŻŹÑßÇŒÆČŠŽ∂ð]+$/)
     .withMessage('Name contains invalid characters'),
     
   uuid: param('id')

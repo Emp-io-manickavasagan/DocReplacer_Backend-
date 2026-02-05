@@ -109,31 +109,49 @@ const getParagraphs = (doc: Document) => {
 export class DocxService {
   // Unzip and parse
   async parse(buffer: Buffer) {
-    const zip = await JSZip.loadAsync(buffer);
-    const documentEntry = zip.file("word/document.xml");
-    if (!documentEntry) {
-      throw new Error("document.xml missing");
+    try {
+      const zip = await JSZip.loadAsync(buffer);
+      const documentEntry = zip.file("word/document.xml");
+      if (!documentEntry) {
+        throw new Error("document.xml missing - not a valid DOCX file");
+      }
+
+      const xml = await documentEntry.async("string");
+      if (!xml || xml.trim().length === 0) {
+        throw new Error("document.xml is empty or corrupted");
+      }
+
+      const xmlDoc = parseXml(xml);
+      if (!xmlDoc || xmlDoc.documentElement.nodeName === 'parsererror') {
+        throw new Error("Invalid XML structure in document.xml");
+      }
+
+      const paragraphs = getParagraphs(xmlDoc);
+
+      const paragraphMap: { [key: string]: number } = {};
+      const styleMap: { [key: string]: string | null } = {};
+      const nodes = paragraphs.map((para, index) => {
+        const id = randomUUID();
+        paragraphMap[id] = index;
+        styleMap[id] = para.styleInfo;
+        return { 
+          id, 
+          text: para.text,
+          isEmpty: para.text.trim() === "",
+          styleInfo: para.styleInfo
+        };
+      });
+
+      return { nodes, paragraphMap, styleMap };
+    } catch (error: any) {
+      if (error.message?.includes('End of data reached')) {
+        throw new Error("Corrupted DOCX file - unable to extract content");
+      }
+      if (error.message?.includes('Invalid or unsupported zip format')) {
+        throw new Error("Invalid DOCX file format");
+      }
+      throw error; // Re-throw with original message
     }
-
-    const xml = await documentEntry.async("string");
-    const xmlDoc = parseXml(xml);
-    const paragraphs = getParagraphs(xmlDoc);
-
-    const paragraphMap: { [key: string]: number } = {};
-    const styleMap: { [key: string]: string | null } = {};
-    const nodes = paragraphs.map((para, index) => {
-      const id = randomUUID();
-      paragraphMap[id] = index;
-      styleMap[id] = para.styleInfo;
-      return { 
-        id, 
-        text: para.text,
-        isEmpty: para.text.trim() === "",
-        styleInfo: para.styleInfo
-      };
-    });
-
-    return { nodes, paragraphMap, styleMap };
   }
 
   // Unzip, replace nodes, zip
