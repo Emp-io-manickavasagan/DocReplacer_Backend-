@@ -86,31 +86,65 @@ const createTextRuns = (xmlDoc: Document, text: string, rPr?: Element) => {
 
 // Get all paragraphs with their text runs and style information
 const getParagraphs = (doc: Document) => {
-  const paragraphs = Array.from(doc.getElementsByTagName("w:p"));
-  return paragraphs.map((p) => {
-    const runs = Array.from(p.getElementsByTagName("w:r"));
-    const textNodes = runs.map((r) => {
-      const tNodes = Array.from(r.getElementsByTagName("w:t"));
-      return tNodes.map((t) => t.textContent || "").join("");
+  try {
+    const paragraphs = Array.from(doc.getElementsByTagName("w:p"));
+    return paragraphs.map((p) => {
+      try {
+        const runs = Array.from(p.getElementsByTagName("w:r"));
+        const textNodes = runs.map((r) => {
+          const tNodes = Array.from(r.getElementsByTagName("w:t"));
+          return tNodes.map((t) => t.textContent || "").join("");
+        });
+        
+        // Extract paragraph properties for style inheritance
+        const pPr = p.getElementsByTagName("w:pPr")[0];
+        const styleInfo = pPr ? new XMLSerializer().serializeToString(pPr) : null;
+        
+        return {
+          element: p,
+          text: textNodes.join("") || "", // Ensure text is never null/undefined
+          styleInfo: styleInfo
+        };
+      } catch (paraError) {
+        console.warn('Error processing paragraph:', paraError);
+        // Return a safe default paragraph
+        return {
+          element: p,
+          text: "",
+          styleInfo: null
+        };
+      }
     });
-    
-    // Extract paragraph properties for style inheritance
-    const pPr = p.getElementsByTagName("w:pPr")[0];
-    const styleInfo = pPr ? new XMLSerializer().serializeToString(pPr) : null;
-    
-    return {
-      element: p,
-      text: textNodes.join(""),
-      styleInfo: styleInfo
-    };
-  });
+  } catch (error) {
+    console.error('Error getting paragraphs:', error);
+    // Return at least one empty paragraph to prevent complete failure
+    return [{
+      element: null,
+      text: "",
+      styleInfo: null
+    }];
+  }
 };
 
 export class DocxService {
   // Unzip and parse
   async parse(buffer: Buffer) {
     try {
+      // Validate buffer
+      if (!buffer || buffer.length === 0) {
+        throw new Error("Empty or invalid file buffer");
+      }
+
+      // Check if it looks like a ZIP file (DOCX is a ZIP)
+      const zipSignature = buffer.slice(0, 4);
+      const isZip = zipSignature[0] === 0x50 && zipSignature[1] === 0x4B;
+      if (!isZip) {
+        throw new Error("File is not a valid ZIP/DOCX format");
+      }
+
       const zip = await JSZip.loadAsync(buffer);
+      
+      // Check for required DOCX structure
       const documentEntry = zip.file("word/document.xml");
       if (!documentEntry) {
         throw new Error("document.xml missing - not a valid DOCX file");
@@ -121,7 +155,13 @@ export class DocxService {
         throw new Error("document.xml is empty or corrupted");
       }
 
-      const xmlDoc = parseXml(xml);
+      let xmlDoc;
+      try {
+        xmlDoc = parseXml(xml);
+      } catch (parseError) {
+        throw new Error("Invalid XML structure in document.xml");
+      }
+
       if (!xmlDoc || xmlDoc.documentElement.nodeName === 'parsererror') {
         throw new Error("Invalid XML structure in document.xml");
       }
@@ -136,21 +176,39 @@ export class DocxService {
         styleMap[id] = para.styleInfo;
         return { 
           id, 
-          text: para.text,
-          isEmpty: para.text.trim() === "",
+          text: para.text || "", // Ensure text is never null
+          isEmpty: !para.text || para.text.trim() === "",
           styleInfo: para.styleInfo
         };
       });
 
+      // Ensure we have at least one paragraph
+      if (nodes.length === 0) {
+        nodes.push({
+          id: randomUUID(),
+          text: "",
+          isEmpty: true,
+          styleInfo: null
+        });
+      }
+
       return { nodes, paragraphMap, styleMap };
     } catch (error: any) {
-      if (error.message?.includes('End of data reached')) {
+      console.error('DOCX parsing error:', error);
+      
+      // Provide specific error messages
+      if (error.message?.includes('End of data reached') || error.message?.includes('Invalid or unsupported zip format')) {
         throw new Error("Corrupted DOCX file - unable to extract content");
       }
-      if (error.message?.includes('Invalid or unsupported zip format')) {
-        throw new Error("Invalid DOCX file format");
+      if (error.message?.includes('not a valid ZIP')) {
+        throw new Error("File is not a valid DOCX format");
       }
-      throw error; // Re-throw with original message
+      if (error.message?.includes('document.xml missing')) {
+        throw new Error("Invalid DOCX structure - missing document content");
+      }
+      
+      // Re-throw with original message for debugging
+      throw new Error(`DOCX parsing failed: ${error.message}`);
     }
   }
 
