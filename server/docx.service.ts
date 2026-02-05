@@ -106,8 +106,7 @@ const getParagraphs = (doc: Document) => {
           styleInfo: styleInfo
         };
       } catch (paraError) {
-        console.warn('Error processing paragraph:', paraError);
-        // Return a safe default paragraph
+        // Return a safe default paragraph on error
         return {
           element: p,
           text: "",
@@ -116,7 +115,6 @@ const getParagraphs = (doc: Document) => {
       }
     });
   } catch (error) {
-    console.error('Error getting paragraphs:', error);
     // Return at least one empty paragraph to prevent complete failure
     return [{
       element: null,
@@ -194,8 +192,6 @@ export class DocxService {
 
       return { nodes, paragraphMap, styleMap };
     } catch (error: any) {
-      console.error('DOCX parsing error:', error);
-      
       // Provide specific error messages
       if (error.message?.includes('End of data reached') || error.message?.includes('Invalid or unsupported zip format')) {
         throw new Error("Corrupted DOCX file - unable to extract content");

@@ -546,8 +546,6 @@ export async function registerRoutes(
 
       res.json({ documentId, paragraphs: result.nodes, isGuest: req.isGuest });
     } catch (err: any) {
-      console.error('DOCX parsing error:', err);
-      
       // Provide more specific error messages
       if (err.message?.includes('document.xml missing')) {
         return res.status(400).json({ message: "Invalid DOCX file: missing document structure" });

@@ -23,8 +23,6 @@ declare global {
 // Main server initialization function
 async function startServer() {
   try {
-    console.log("🚀 Starting server initialization...");
-
     const isCloudPlatform =
       process.env.RENDER ||
       process.env.VERCEL ||
@@ -33,12 +31,6 @@ async function startServer() {
       process.env.FLY_APP_NAME ||
       process.env.HEROKU_APP_NAME;
 
-    console.log(
-      `📍 Environment: ${process.env.NODE_ENV}, Cloud Platform: ${
-        isCloudPlatform ? "Yes" : "No"
-      }`
-    );
-
     if (
       process.env.NODE_ENV === "production" &&
       process.env.DISABLE_CLUSTER !== "true" &&
@@ -46,17 +38,13 @@ async function startServer() {
     ) {
       const shouldStartServer = setupCluster();
       if (!shouldStartServer) {
-        console.log("🔧 Master process started, workers will handle requests");
         return;
       }
-      console.log("👷 Worker process starting...");
       monitorWorkerMemory();
     } else if (process.env.NODE_ENV === "production") {
-      console.log("☁️ Cloud platform detected, starting single process");
       monitorWorkerMemory();
     }
 
-    console.log("🔍 Validating environment variables...");
     const requiredEnvVars = [
       "SUPABASE_URL",
       "SUPABASE_SERVICE_ROLE_KEY",
@@ -65,20 +53,15 @@ async function startServer() {
 
     for (const envVar of requiredEnvVars) {
       if (!process.env[envVar]) {
-        console.error(`❌ Missing required environment variable: ${envVar}`);
         process.exit(1);
       }
     }
-    console.log("✅ Environment variables validated");
 
     // FIXED BLOCK
     if (process.env.JWT_SECRET && process.env.JWT_SECRET.length < 32) {
-      console.error("❌ JWT_SECRET must be at least 32 characters long");
       process.exit(1);
     }
-    console.log("✅ JWT_SECRET validated");
 
-    console.log("🏗️ Creating Express app...");
     const app = express();
     const httpServer = createServer(app);
 
@@ -158,9 +141,7 @@ async function startServer() {
     app.use(express.urlencoded({ extended: false, limit: "10mb" }));
 
     try {
-      console.log("🔌 Connecting to database...");
       await connectDB();
-      console.log("✅ Database connected");
 
       app.get("/health", (_req, res) => {
         res.json({
@@ -186,39 +167,28 @@ async function startServer() {
 
       const port = parseInt(process.env.PORT || "5000", 10);
       httpServer.listen(port, "0.0.0.0", () => {
-        console.log(`🚀 Server running on port ${port}`);
         if (process.send) process.send("server-started");
       });
     } catch (error) {
-      console.error("💥 Startup error:", error);
       process.exit(1);
     }
   } catch (error) {
-    console.error("💥 Fatal error:", error);
     process.exit(1);
   }
 }
 
 export function log(message: string) {
-  if (
-    process.env.NODE_ENV !== "production" ||
-    message.includes("serving on port")
-  ) {
-    console.log(message);
-  }
+  // Silent logging - no console output
 }
 
 process.on("unhandledRejection", (reason) => {
-  console.error("Unhandled Rejection:", reason);
   process.exit(1);
 });
 
 process.on("uncaughtException", (error) => {
-  console.error("Uncaught Exception:", error);
   process.exit(1);
 });
 
 startServer().catch((err) => {
-  console.error("Failed to start server:", err);
   process.exit(1);
 });
