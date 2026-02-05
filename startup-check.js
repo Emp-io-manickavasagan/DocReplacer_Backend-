@@ -1,4 +1,5 @@
 // startup-check.js (ESM compatible)
+import 'dotenv/config';
 
 console.log('🔍 Checking server startup requirements...');
 

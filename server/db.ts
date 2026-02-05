@@ -25,7 +25,9 @@ export async function connectDB() {
     
     if (error) {
       console.error('❌ Database connection test failed:', error.message);
-      throw error;
+      console.log('⚠️ Server will continue without database connection');
+      console.log('⚠️ Please check your Supabase project status and URL');
+      return; // Don't throw, just warn
     }
     
     console.log('✅ Database connection test successful');
@@ -40,7 +42,13 @@ export async function connectDB() {
     } else {
       console.error('❌ Unknown database connection error:', error);
     }
-    throw error; // Re-throw to be caught by the main error handler
+    
+    console.log('⚠️ Server will continue without database connection');
+    console.log('⚠️ Please check your Supabase project status and URL');
+    console.log('⚠️ Current Supabase URL:', process.env.SUPABASE_URL);
+    
+    // Don't throw error, let server start anyway
+    return;
   }
 }
 
